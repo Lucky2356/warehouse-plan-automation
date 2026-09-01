@@ -15,8 +15,6 @@ namespace WarehousePlanAutomation.Excel;
 /// </summary>
 public sealed class ExcelWorkbookProcessor : IWorkbookProcessor
 {
-    private static readonly string[] SupportedExtensions = { ".xlsx", ".xlsm", ".xlsb", ".xls" };
-
     /// <summary>Сколько первых строк листа просматривается в поиске строки заголовков.</summary>
     private const int HeaderScanRows = 15;
 
@@ -48,12 +46,11 @@ public sealed class ExcelWorkbookProcessor : IWorkbookProcessor
             throw new WarehousePlanException("Файл не найден: " + sourceFilePath);
         }
 
-        var extension = Path.GetExtension(sourceFilePath);
-        if (!SupportedExtensions.Contains(extension, StringComparer.OrdinalIgnoreCase))
+        if (!WorkbookFile.IsSupported(sourceFilePath))
         {
             throw new WarehousePlanException(
-                "Неподдерживаемый формат файла: " + extension +
-                ". Ожидается книга Excel (.xlsx, .xlsm, .xlsb, .xls).");
+                "Неподдерживаемый формат файла: " + Path.GetExtension(sourceFilePath) +
+                ". Ожидается книга Excel (" + string.Join(", ", WorkbookFile.SupportedExtensions) + ").");
         }
 
         var outputPath = BuildOutputPath(sourceFilePath);

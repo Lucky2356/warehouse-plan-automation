@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Globalization;
 using System.IO;
 using Microsoft.Win32;
 using WarehousePlanAutomation.App.Infrastructure;
@@ -11,16 +10,24 @@ namespace WarehousePlanAutomation.App.ViewModels;
 
 public sealed class MainViewModel : ObservableObject
 {
+    private const string InitialHint =
+        "Выберите вчерашнюю книгу с обновлёнными листами «Заказы на отгрузку» " +
+        "и «Журнал заказов на отгрузку».";
+
     private readonly IWorkbookProcessor _processor;
     private readonly IAppLogger _logger;
 
     private string _selectedFilePath = string.Empty;
-    private string _statusMessage = "Выберите Excel-файл с листами «Заказы на отгрузку» и «Журнал заказов на отгрузку».";
+    private string _statusMessage = InitialHint;
     private string _errorMessage = string.Empty;
     private string _resultPath = string.Empty;
-    private string _resultSummary = string.Empty;
     private bool _isBusy;
+    private bool _isDragOver;
     private int _progressValue;
+    private int _processedRows;
+    private int _remainingRows;
+    private int _newOrders;
+    private int _deletedPlaceholders;
 
     private CancellationTokenSource? _cancellation;
 
@@ -33,12 +40,15 @@ public sealed class MainViewModel : ObservableObject
         ProcessCommand = new RelayCommand(
             () => _ = RunAsync(),
             () => !IsBusy && SelectedFilePath.Length > 0);
+        CancelCommand = new RelayCommand(Cancel, () => IsBusy);
         OpenResultFolderCommand = new RelayCommand(OpenResultFolder, () => ResultPath.Length > 0);
     }
 
     public RelayCommand SelectFileCommand { get; }
 
     public RelayCommand ProcessCommand { get; }
+
+    public RelayCommand CancelCommand { get; }
 
     public RelayCommand OpenResultFolderCommand { get; }
 
@@ -48,9 +58,12 @@ public sealed class MainViewModel : ObservableObject
         private set
         {
             SetProperty(ref _selectedFilePath, value);
+            OnPropertyChanged(nameof(HasSelectedFile));
             RefreshCommands();
         }
     }
+
+    public bool HasSelectedFile => SelectedFilePath.Length > 0;
 
     public string StatusMessage
     {
@@ -65,6 +78,7 @@ public sealed class MainViewModel : ObservableObject
         {
             SetProperty(ref _errorMessage, value);
             OnPropertyChanged(nameof(HasError));
+            OnPropertyChanged(nameof(ShowHint));
         }
     }
 
@@ -77,16 +91,48 @@ public sealed class MainViewModel : ObservableObject
         {
             SetProperty(ref _resultPath, value);
             OnPropertyChanged(nameof(HasResult));
+            OnPropertyChanged(nameof(ShowHint));
             OpenResultFolderCommand.RaiseCanExecuteChanged();
         }
     }
 
     public bool HasResult => ResultPath.Length > 0;
 
-    public string ResultSummary
+    /// <summary>Подсказка на месте будущего результата: пока ничего не показано.</summary>
+    public bool ShowHint => !HasResult && !HasError;
+
+    public int ProcessedRows
     {
-        get => _resultSummary;
-        private set => SetProperty(ref _resultSummary, value);
+        get => _processedRows;
+        private set => SetProperty(ref _processedRows, value);
+    }
+
+    /// <summary>
+    /// Строки, которые не распределились автоматически. Единственный счётчик,
+    /// требующий действия: если он больше нуля, окно подсвечивает его отдельно.
+    /// </summary>
+    public int RemainingRows
+    {
+        get => _remainingRows;
+        private set
+        {
+            SetProperty(ref _remainingRows, value);
+            OnPropertyChanged(nameof(HasLeftovers));
+        }
+    }
+
+    public bool HasLeftovers => RemainingRows > 0;
+
+    public int NewOrders
+    {
+        get => _newOrders;
+        private set => SetProperty(ref _newOrders, value);
+    }
+
+    public int DeletedPlaceholders
+    {
+        get => _deletedPlaceholders;
+        private set => SetProperty(ref _deletedPlaceholders, value);
     }
 
     public bool IsBusy
@@ -99,20 +145,72 @@ public sealed class MainViewModel : ObservableObject
         }
     }
 
+    /// <summary>Над окном держат файл: поле выбора подсвечивается.</summary>
+    public bool IsDragOver
+    {
+        get => _isDragOver;
+        set => SetProperty(ref _isDragOver, value);
+    }
+
     public int ProgressValue
     {
         get => _progressValue;
         private set => SetProperty(ref _progressValue, value);
     }
 
-    public void Cancel() => _cancellation?.Cancel();
+    public void Cancel()
+    {
+        if (_cancellation is null || _cancellation.IsCancellationRequested)
+        {
+            return;
+        }
+
+        StatusMessage = "Отмена обработки...";
+        _cancellation.Cancel();
+        RefreshCommands();
+    }
+
+    /// <summary>
+    /// Общий вход для диалога выбора и для файла, перетащенного в окно.
+    /// Возвращает false, если формат не поддерживается.
+    /// </summary>
+    public bool ApplySelectedFile(string path)
+    {
+        if (IsBusy)
+        {
+            return false;
+        }
+
+        if (!WorkbookFile.IsSupported(path))
+        {
+            ErrorMessage =
+                "Это не книга Excel: " + Path.GetFileName(path) + "." + Environment.NewLine +
+                "Подойдут файлы " + string.Join(", ", WorkbookFile.SupportedExtensions) + ".";
+            StatusMessage = InitialHint;
+            return false;
+        }
+
+        if (!File.Exists(path))
+        {
+            ErrorMessage = "Файл не найден: " + path;
+            StatusMessage = InitialHint;
+            return false;
+        }
+
+        SelectedFilePath = path;
+        ErrorMessage = string.Empty;
+        ResultPath = string.Empty;
+        ProgressValue = 0;
+        StatusMessage = "Файл выбран. Нажмите «Сформировать план склада».";
+        return true;
+    }
 
     private void SelectFile()
     {
         var dialog = new OpenFileDialog
         {
             Title = "Выбор файла",
-            Filter = "Книги Excel (*.xlsx;*.xlsm;*.xlsb;*.xls)|*.xlsx;*.xlsm;*.xlsb;*.xls|Все файлы (*.*)|*.*",
+            Filter = WorkbookFile.DialogFilter,
             CheckFileExists = true,
         };
 
@@ -121,12 +219,7 @@ public sealed class MainViewModel : ObservableObject
             return;
         }
 
-        SelectedFilePath = dialog.FileName;
-        ErrorMessage = string.Empty;
-        ResultPath = string.Empty;
-        ResultSummary = string.Empty;
-        ProgressValue = 0;
-        StatusMessage = "Файл выбран. Нажмите «Сформировать план склада».";
+        ApplySelectedFile(dialog.FileName);
     }
 
     private async Task RunAsync()
@@ -139,7 +232,6 @@ public sealed class MainViewModel : ObservableObject
         IsBusy = true;
         ErrorMessage = string.Empty;
         ResultPath = string.Empty;
-        ResultSummary = string.Empty;
         ProgressValue = 0;
         StatusMessage = "Подготовка...";
 
@@ -158,8 +250,11 @@ public sealed class MainViewModel : ObservableObject
                 .ProcessAsync(SelectedFilePath, progress, _cancellation.Token)
                 .ConfigureAwait(true);
 
+            ProcessedRows = result.ProcessedOrderRows;
+            RemainingRows = result.RemainingOrderRows;
+            NewOrders = result.NewPlanOrders;
+            DeletedPlaceholders = result.DeletedPlaceholderRows;
             ResultPath = result.OutputPath;
-            ResultSummary = BuildSummary(result);
             StatusMessage = "План склада успешно сформирован";
             ProgressValue = 100;
         }
@@ -188,16 +283,6 @@ public sealed class MainViewModel : ObservableObject
         {
             IsBusy = false;
         }
-    }
-
-    private static string BuildSummary(ProcessingResult result)
-    {
-        var culture = CultureInfo.CurrentCulture;
-        return
-            "Обработано строк выгрузки: " + result.ProcessedOrderRows.ToString(culture) + Environment.NewLine +
-            "Осталось строк для ручной проверки: " + result.RemainingOrderRows.ToString(culture) + Environment.NewLine +
-            "Добавлено новых заказов: " + result.NewPlanOrders.ToString(culture) + Environment.NewLine +
-            "Удалено строк «Заказы будут загружены»: " + result.DeletedPlaceholderRows.ToString(culture);
     }
 
     private void OpenResultFolder()
@@ -235,6 +320,7 @@ public sealed class MainViewModel : ObservableObject
     {
         SelectFileCommand.RaiseCanExecuteChanged();
         ProcessCommand.RaiseCanExecuteChanged();
+        CancelCommand.RaiseCanExecuteChanged();
         OpenResultFolderCommand.RaiseCanExecuteChanged();
     }
 }

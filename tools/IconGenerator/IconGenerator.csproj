@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Одноразовый генератор иконки приложения. В решение WarehousePlanAutomation.sln
+    намеренно не включён: CI и релиз его не собирают. Запускается вручную,
+    когда нужно перерисовать app.ico:
+
+      dotnet run в этой папке, единственный аргумент — путь к app.ico.
+
+    Рисование и запись PNG выполняются средствами WPF (DrawingVisual,
+    RenderTargetBitmap, PngBitmapEncoder), поэтому сторонних пакетов не нужно.
+  -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>IconGenerator</RootNamespace>
+  </PropertyGroup>
+
+</Project>

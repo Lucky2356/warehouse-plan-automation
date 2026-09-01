@@ -7,6 +7,7 @@
     <RootNamespace>WarehousePlanAutomation.App</RootNamespace>
     <AssemblyName>WarehousePlanAutomation</AssemblyName>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\app.ico</ApplicationIcon>
     <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
 
     <!--
@@ -23,6 +24,15 @@
     <PublishTrimmed>false</PublishTrimmed>
     <PublishReadyToRun>false</PublishReadyToRun>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      ApplicationIcon задаёт иконку самого .exe. Чтобы её же показывал заголовок окна
+      (Icon= у Window), файл должен попасть в сборку ресурсом: для .ico это не делается
+      автоматически, в отличие от .png.
+    -->
+    <Resource Include="Assets\app.ico" />
+  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\WarehousePlanAutomation.Core\WarehousePlanAutomation.Core.csproj" />

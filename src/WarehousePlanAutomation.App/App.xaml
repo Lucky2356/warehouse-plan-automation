@@ -4,13 +4,253 @@
              StartupUri="MainWindow.xaml">
     <Application.Resources>
 
-        <Style TargetType="Button">
-            <Setter Property="Padding" Value="14,6" />
-            <Setter Property="MinHeight" Value="30" />
-        </Style>
+        <!--
+            Палитра «спокойный светлый»: белые карточки на мягком сером поле,
+            один индиго-акцент. Окно стоит рядом с открытым Excel и не должно с ним спорить.
+        -->
+        <SolidColorBrush x:Key="GroundBrush" Color="#F3F3F5" />
+        <SolidColorBrush x:Key="CardBrush" Color="#FFFFFF" />
+        <SolidColorBrush x:Key="CardBorderBrush" Color="#E3E3E8" />
+        <SolidColorBrush x:Key="TileBrush" Color="#F7F7F9" />
+        <SolidColorBrush x:Key="InputBrush" Color="#FAFAFB" />
+        <SolidColorBrush x:Key="InputBorderBrush" Color="#DCDCE3" />
 
+        <SolidColorBrush x:Key="InkBrush" Color="#1B1B1F" />
+        <SolidColorBrush x:Key="InkSecondaryBrush" Color="#61616B" />
+        <SolidColorBrush x:Key="InkMutedBrush" Color="#71717D" />
+        <SolidColorBrush x:Key="InkFaintBrush" Color="#93939E" />
+
+        <SolidColorBrush x:Key="AccentBrush" Color="#4C4FA6" />
+        <SolidColorBrush x:Key="AccentHoverBrush" Color="#3E4090" />
+        <SolidColorBrush x:Key="AccentPressedBrush" Color="#35377D" />
+        <SolidColorBrush x:Key="AccentDisabledBrush" Color="#A8A9CE" />
+        <SolidColorBrush x:Key="TrackBrush" Color="#E6E6EB" />
+
+        <SolidColorBrush x:Key="ButtonBorderBrush" Color="#C6C6CF" />
+        <SolidColorBrush x:Key="ButtonHoverBrush" Color="#F2F2F5" />
+        <SolidColorBrush x:Key="ButtonPressedBrush" Color="#E8E8ED" />
+
+        <!-- Смысловые цвета: успех, внимание, ошибка. С акцентом не смешиваются. -->
+        <SolidColorBrush x:Key="SuccessBrush" Color="#2E7D46" />
+        <SolidColorBrush x:Key="SuccessSoftBrush" Color="#E6F3EA" />
+        <SolidColorBrush x:Key="SuccessBorderBrush" Color="#C8DFD0" />
+
+        <SolidColorBrush x:Key="WarnBrush" Color="#B4690E" />
+        <SolidColorBrush x:Key="WarnInkBrush" Color="#8A5209" />
+        <SolidColorBrush x:Key="WarnSoftBrush" Color="#FDF3E4" />
+        <SolidColorBrush x:Key="WarnBorderBrush" Color="#EBC48A" />
+
+        <SolidColorBrush x:Key="ErrorBrush" Color="#B3261E" />
+        <SolidColorBrush x:Key="ErrorSoftBrush" Color="#FCEEED" />
+        <SolidColorBrush x:Key="ErrorBorderBrush" Color="#E8C4C1" />
+
+        <!-- Типографика -->
         <Style TargetType="TextBlock">
             <Setter Property="TextWrapping" Value="Wrap" />
+            <Setter Property="Foreground" Value="{StaticResource InkBrush}" />
+            <Setter Property="TextOptions.TextFormattingMode" Value="Display" />
+        </Style>
+
+        <Style x:Key="TitleText" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="21" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Foreground" Value="{StaticResource InkBrush}" />
+            <Setter Property="TextWrapping" Value="Wrap" />
+        </Style>
+
+        <Style x:Key="SubtitleText" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="Foreground" Value="{StaticResource InkSecondaryBrush}" />
+            <Setter Property="TextWrapping" Value="Wrap" />
+        </Style>
+
+        <!-- Надпись над карточкой: «ФАЙЛ» -->
+        <Style x:Key="SectionLabelText" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="11" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Foreground" Value="{StaticResource InkMutedBrush}" />
+            <Setter Property="TextWrapping" Value="NoWrap" />
+        </Style>
+
+        <Style x:Key="CaptionText" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="11" />
+            <Setter Property="Foreground" Value="{StaticResource InkMutedBrush}" />
+            <Setter Property="TextWrapping" Value="Wrap" />
+        </Style>
+
+        <!-- Крупная цифра счётчика -->
+        <Style x:Key="CounterText" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="24" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Foreground" Value="{StaticResource InkBrush}" />
+            <Setter Property="TextWrapping" Value="NoWrap" />
+        </Style>
+
+        <!-- Карточка -->
+        <Style x:Key="Card" TargetType="Border">
+            <Setter Property="Background" Value="{StaticResource CardBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource CardBorderBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="8" />
+            <Setter Property="Padding" Value="16,14" />
+            <Setter Property="SnapsToDevicePixels" Value="True" />
+        </Style>
+
+        <Style x:Key="Tile" TargetType="Border">
+            <Setter Property="Background" Value="{StaticResource TileBrush}" />
+            <Setter Property="CornerRadius" Value="6" />
+            <Setter Property="Padding" Value="11,9" />
+            <Setter Property="SnapsToDevicePixels" Value="True" />
+        </Style>
+
+        <!-- Кнопка-акцент -->
+        <Style x:Key="PrimaryButton" TargetType="Button">
+            <Setter Property="Background" Value="{StaticResource AccentBrush}" />
+            <Setter Property="Foreground" Value="#FFFFFF" />
+            <Setter Property="FontSize" Value="14" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Padding" Value="24,0" />
+            <Setter Property="Height" Value="38" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="SnapsToDevicePixels" Value="True" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Chrome"
+                                Background="{TemplateBinding Background}"
+                                CornerRadius="6"
+                                SnapsToDevicePixels="True">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"
+                                              Margin="{TemplateBinding Padding}" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Chrome" Property="Background"
+                                        Value="{StaticResource AccentHoverBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Chrome" Property="Background"
+                                        Value="{StaticResource AccentPressedBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Setter TargetName="Chrome" Property="BorderBrush" Value="#1B1B1F" />
+                                <Setter TargetName="Chrome" Property="BorderThickness" Value="2" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="Chrome" Property="Background"
+                                        Value="{StaticResource AccentDisabledBrush}" />
+                                <Setter Property="Cursor" Value="Arrow" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Обычная кнопка -->
+        <Style x:Key="SecondaryButton" TargetType="Button">
+            <Setter Property="Background" Value="{StaticResource CardBrush}" />
+            <Setter Property="Foreground" Value="{StaticResource InkBrush}" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="Padding" Value="16,0" />
+            <Setter Property="Height" Value="34" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="SnapsToDevicePixels" Value="True" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Chrome"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{StaticResource ButtonBorderBrush}"
+                                BorderThickness="1"
+                                CornerRadius="6"
+                                SnapsToDevicePixels="True">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"
+                                              Margin="{TemplateBinding Padding}" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Chrome" Property="Background"
+                                        Value="{StaticResource ButtonHoverBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Chrome" Property="Background"
+                                        Value="{StaticResource ButtonPressedBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Setter TargetName="Chrome" Property="BorderBrush"
+                                        Value="{StaticResource AccentBrush}" />
+                                <Setter TargetName="Chrome" Property="BorderThickness" Value="2" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="Chrome" Property="Background" Value="#F3F3F5" />
+                                <Setter Property="Foreground" Value="{StaticResource InkFaintBrush}" />
+                                <Setter Property="Cursor" Value="Arrow" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Поле с путём к файлу: только для чтения, но текст можно выделить и скопировать -->
+        <Style x:Key="PathTextBox" TargetType="TextBox">
+            <Setter Property="IsReadOnly" Value="True" />
+            <Setter Property="Height" Value="34" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="Padding" Value="11,0" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+            <Setter Property="Foreground" Value="{StaticResource InkBrush}" />
+            <Setter Property="Background" Value="{StaticResource InputBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource InputBorderBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="SnapsToDevicePixels" Value="True" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TextBox">
+                        <Border x:Name="Chrome"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="6"
+                                SnapsToDevicePixels="True">
+                            <ScrollViewer x:Name="PART_ContentHost"
+                                          Margin="{TemplateBinding Padding}"
+                                          VerticalAlignment="Center" />
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Полоса прогресса: 5 px, скруглённая -->
+        <Style x:Key="SlimProgressBar" TargetType="ProgressBar">
+            <Setter Property="Height" Value="5" />
+            <Setter Property="Minimum" Value="0" />
+            <Setter Property="Maximum" Value="100" />
+            <Setter Property="Foreground" Value="{StaticResource AccentBrush}" />
+            <Setter Property="Background" Value="{StaticResource TrackBrush}" />
+            <Setter Property="SnapsToDevicePixels" Value="True" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ProgressBar">
+                        <Border Background="{TemplateBinding Background}"
+                                CornerRadius="3"
+                                ClipToBounds="True"
+                                SnapsToDevicePixels="True">
+                            <Grid>
+                                <Rectangle x:Name="PART_Track" />
+                                <Rectangle x:Name="PART_Indicator"
+                                           HorizontalAlignment="Left"
+                                           RadiusX="3" RadiusY="3"
+                                           Fill="{TemplateBinding Foreground}" />
+                            </Grid>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
 
     </Application.Resources>
