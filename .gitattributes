@@ -1,0 +1,33 @@
+# Git сам определяет текстовые файлы и нормализует переводы строк в репозитории.
+* text=auto
+
+# Файлы, которые Visual Studio и MSBuild ожидают с переводами строк Windows.
+*.sln       text eol=crlf
+*.csproj    text eol=crlf
+*.props     text eol=crlf
+*.targets   text eol=crlf
+*.manifest  text eol=crlf
+
+# Исходный код и конфигурация.
+*.cs        text diff=csharp
+*.xaml      text
+*.md        text
+*.yml       text
+*.yaml      text
+*.json      text
+*.gitignore text
+*.gitattributes text
+
+# Бинарные файлы: Git не должен пытаться их сливать или менять переводы строк.
+*.xlsx binary
+*.xlsm binary
+*.xlsb binary
+*.xls  binary
+*.docx binary
+*.pdf  binary
+*.png  binary
+*.jpg  binary
+*.ico  binary
+*.zip  binary
+*.dll  binary
+*.exe  binary

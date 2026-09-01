@@ -1,0 +1,35 @@
+# Результаты сборки
+bin/
+obj/
+[Dd]ebug/
+[Rr]elease/
+publish/
+artifacts/
+*.user
+*.suo
+*.userprefs
+
+# Visual Studio / Rider / VS Code
+.vs/
+.idea/
+.vscode/
+*.dotCover
+
+# Пакеты и кэш NuGet
+packages/
+*.nupkg
+project.lock.json
+project.assets.json
+
+# Логи и временные файлы
+*.log
+*.tmp
+~$*
+
+# Рабочие файлы Excel и Word.
+# Рабочие книги содержат данные компании, их не следует хранить в репозитории.
+*.xlsx
+*.xlsm
+*.xlsb
+*.xls
+*.docx

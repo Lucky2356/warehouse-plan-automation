@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <RootNamespace>WarehousePlanAutomation.App</RootNamespace>
+    <AssemblyName>WarehousePlanAutomation</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+    <!-- Публикация выполняется в папку: это самый надёжный вариант для WPF и COM-автоматизации. -->
+    <PublishSingleFile>false</PublishSingleFile>
+    <PublishTrimmed>false</PublishTrimmed>
+    <PublishReadyToRun>false</PublishReadyToRun>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\WarehousePlanAutomation.Core\WarehousePlanAutomation.Core.csproj" />
+    <ProjectReference Include="..\WarehousePlanAutomation.Excel\WarehousePlanAutomation.Excel.csproj" />
+  </ItemGroup>
+
+</Project>

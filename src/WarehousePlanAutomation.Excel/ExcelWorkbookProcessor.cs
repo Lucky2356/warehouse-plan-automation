@@ -1,0 +1,550 @@
+using System.Globalization;
+using System.Runtime.InteropServices;
+using WarehousePlanAutomation.Core.Abstractions;
+using WarehousePlanAutomation.Core.Logging;
+using WarehousePlanAutomation.Core.Models;
+using WarehousePlanAutomation.Core.Processing;
+using WarehousePlanAutomation.Core.Sheets;
+
+namespace WarehousePlanAutomation.Excel;
+
+/// <summary>
+/// Обработка книги через COM-автоматизацию установленного Microsoft Excel.
+/// Исходный файл никогда не изменяется: все действия выполняются над копией.
+/// </summary>
+public sealed class ExcelWorkbookProcessor : IWorkbookProcessor
+{
+    private static readonly string[] SupportedExtensions = { ".xlsx", ".xlsm", ".xlsb", ".xls" };
+
+    private readonly IAppLogger _logger;
+    private readonly Func<DateTime> _nowProvider;
+
+    public ExcelWorkbookProcessor(IAppLogger logger, Func<DateTime>? nowProvider = null)
+    {
+        _logger = logger;
+        _nowProvider = nowProvider ?? (() => DateTime.Now);
+    }
+
+    public Task<ProcessingResult> ProcessAsync(
+        string sourceFilePath,
+        IProgress<ProcessingStage>? progress,
+        CancellationToken cancellationToken) =>
+        StaTaskRunner.RunAsync(() => Process(sourceFilePath, progress, cancellationToken), cancellationToken);
+
+    private ProcessingResult Process(
+        string sourceFilePath,
+        IProgress<ProcessingStage>? progress,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(sourceFilePath) || !File.Exists(sourceFilePath))
+        {
+            throw new WarehousePlanException("Файл не найден: " + sourceFilePath);
+        }
+
+        var extension = Path.GetExtension(sourceFilePath);
+        if (!SupportedExtensions.Contains(extension, StringComparer.OrdinalIgnoreCase))
+        {
+            throw new WarehousePlanException(
+                "Неподдерживаемый формат файла: " + extension +
+                ". Ожидается книга Excel (.xlsx, .xlsm, .xlsb, .xls).");
+        }
+
+        var outputPath = BuildOutputPath(sourceFilePath);
+        _logger.Information("Начало обработки. Исходный файл: " + sourceFilePath);
+        Report(progress, "Создание копии файла", 5);
+
+        File.Copy(sourceFilePath, outputPath);
+        _logger.Information("Создана копия: " + outputPath);
+
+        try
+        {
+            var result = ProcessCopy(outputPath, progress, cancellationToken);
+            _logger.Information(
+                "Обработка завершена. Обработано строк выгрузки: " + result.ProcessedOrderRows +
+                ", осталось для ручной проверки: " + result.RemainingOrderRows +
+                ", добавлено новых заказов: " + result.NewPlanOrders);
+            return result;
+        }
+        catch (Exception ex)
+        {
+            _logger.Error("Обработка прервана, частичный результат удалён.", ex);
+            TryDeleteFile(outputPath);
+            throw;
+        }
+    }
+
+    private ProcessingResult ProcessCopy(
+        string path,
+        IProgress<ProcessingStage>? progress,
+        CancellationToken cancellationToken)
+    {
+        using var host = ExcelApplicationHost.Start(_logger);
+        using var scope = new ComScope();
+
+        object applicationObject = host.Application;
+        dynamic application = applicationObject;
+        dynamic? workbook = null;
+        var closed = false;
+
+        try
+        {
+            dynamic workbooks = scope.Track(application.Workbooks);
+            workbook = scope.Track(workbooks.Open(path, 0));
+            application.Calculation = ExcelConstants.XlCalculationManual;
+
+            var sheets = ResolveSheets((object)workbook, scope);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            Report(progress, "Чтение данных", 15);
+            var orders = OrdersSheetReader.Read(ExcelSheetOperations.ReadGrid(sheets.Orders, withFormulas: false));
+            var journal = JournalSheetReader.Read(ExcelSheetOperations.ReadGrid(sheets.Journal, withFormulas: false));
+            var planLayout = ReadPlanLayout(sheets.Plan);
+            _logger.Information(
+                "Прочитано строк: выгрузка " + orders.Rows.Count +
+                ", журнал " + journal.Rows.Count +
+                ", план " + planLayout.AllDataRows.Count());
+
+            var originalAggregates = planLayout.OrderSections.ToDictionary(
+                section => section.Kind,
+                section => (section.AggregateFormula, section.FirstDataRow));
+
+            cancellationToken.ThrowIfCancellationRequested();
+            Report(progress, "Классификация заказов", 30);
+            var classification = OrderClassifier.Classify(orders.Rows);
+            var update = PlanUpdateBuilder.Build(planLayout, classification, journal.Rows, _nowProvider());
+            _logger.Information(
+                "Классификация: к удалению " + classification.RowsToDelete.Count +
+                ", остаётся " + classification.Leftovers.Count +
+                ", сегодняшних заказов " + classification.Groups.Count +
+                ", новых строк плана " + update.NewRows.Count);
+
+            cancellationToken.ThrowIfCancellationRequested();
+            Report(progress, "Удаление обработанных строк выгрузки", 45);
+
+            // Отбор автофильтра снимается только на изменяемых листах: при активном отборе
+            // Excel удаляет строки лишь в видимой части диапазона.
+            if (ExcelSheetOperations.ShowAllRows(sheets.Orders))
+            {
+                _logger.Information("На листе «" + SheetSchema.OrdersSheet + "» снят отбор автофильтра.");
+            }
+
+            if (ExcelSheetOperations.ShowAllRows(sheets.Plan))
+            {
+                _logger.Information("На листе «" + SheetSchema.PlanSheet + "» снят отбор автофильтра.");
+            }
+
+            ExcelSheetOperations.DeleteRows(sheets.Orders, classification.RowsToDelete);
+
+            cancellationToken.ThrowIfCancellationRequested();
+            Report(progress, "Обновление листа «План»", 60);
+            ExcelSheetOperations.DeleteRows(sheets.Plan, update.PlanRowsToDelete);
+
+            InsertNewRows(applicationObject, sheets.Plan, update.NewRows);
+            planLayout = ReadPlanLayout(sheets.Plan);
+
+            ApplyOrderUpdates(sheets.Plan, planLayout, update.OrderUpdates);
+            ApplyAggregateUpdates(sheets.Plan, planLayout, update.AggregateUpdates);
+
+            cancellationToken.ThrowIfCancellationRequested();
+            Report(progress, "Пересчёт формул", 75);
+            application.Calculation = ExcelConstants.XlCalculationAutomatic;
+            application.CalculateFull();
+
+            Report(progress, "Приоритизация и нумерация", 85);
+            planLayout = ReadPlanLayout(sheets.Plan);
+            var arrangement = PlanArrangementBuilder.Build(planLayout);
+            foreach (var move in arrangement.Moves)
+            {
+                ExcelSheetOperations.MoveRow(applicationObject, sheets.Plan, move.FromRow, move.ToRow);
+            }
+
+            var numberColumn = planLayout.Headers[SheetSchema.Plan.Number];
+            foreach (var assignment in arrangement.Numbers)
+            {
+                ExcelSheetOperations.SetValue(sheets.Plan, assignment.ExcelRow, numberColumn, (double)assignment.Number);
+            }
+
+            RepairAggregateFormulas(sheets.Plan, originalAggregates);
+
+            cancellationToken.ThrowIfCancellationRequested();
+            Report(progress, "Сохранение файла", 95);
+            application.CalculateFull();
+            workbook.Save();
+            workbook.Close(true);
+            closed = true;
+
+            Report(progress, "Готово", 100);
+            return new ProcessingResult(
+                path,
+                classification.RowsToDelete.Count,
+                classification.Leftovers.Count,
+                update.NewRows.Count,
+                update.PlanRowsToDelete.Count);
+        }
+        finally
+        {
+            if (workbook is not null && !closed)
+            {
+                try
+                {
+                    workbook.Close(false);
+                }
+                catch (COMException ex)
+                {
+                    _logger.Warning("Не удалось корректно закрыть книгу после ошибки.", ex);
+                }
+            }
+        }
+    }
+
+    private sealed class WorkbookSheets
+    {
+        public WorkbookSheets(object plan, object orders, object journal)
+        {
+            Plan = plan;
+            Orders = orders;
+            Journal = journal;
+        }
+
+        public object Plan { get; }
+
+        public object Orders { get; }
+
+        public object Journal { get; }
+    }
+
+    private static WorkbookSheets ResolveSheets(object workbook, ComScope scope)
+    {
+        var plan = ExcelSheetOperations.FindSheet(workbook, SheetSchema.PlanSheet, scope);
+        var orders = ExcelSheetOperations.FindSheet(workbook, SheetSchema.OrdersSheet, scope);
+        var journal = ExcelSheetOperations.FindSheet(workbook, SheetSchema.JournalSheet, scope);
+
+        var problems = new List<string>();
+        if (plan is null)
+        {
+            problems.Add("в книге нет листа «" + SheetSchema.PlanSheet + "»");
+        }
+
+        if (orders is null)
+        {
+            problems.Add("в книге нет листа «" + SheetSchema.OrdersSheet + "»");
+        }
+
+        if (journal is null)
+        {
+            problems.Add("в книге нет листа «" + SheetSchema.JournalSheet + "»");
+        }
+
+        if (problems.Count > 0)
+        {
+            throw new WorkbookValidationException(problems);
+        }
+
+        return new WorkbookSheets(plan!, orders!, journal!);
+    }
+
+    private static PlanLayout ReadPlanLayout(object planSheet) =>
+        PlanSheetReader.Read(ExcelSheetOperations.ReadGrid(planSheet, withFormulas: true));
+
+    private void InsertNewRows(object application, object planSheet, IReadOnlyList<NewPlanRowSpec> specs)
+    {
+        foreach (var spec in specs)
+        {
+            var layout = ReadPlanLayout(planSheet);
+            var section = layout.Section(spec.Section);
+            if (section is null)
+            {
+                throw new WarehousePlanException(
+                    "На листе «" + SheetSchema.PlanSheet + "» не найден блок для нового заказа " +
+                    spec.LoadNumber + ".");
+            }
+
+            var template = ChooseTemplateRow(layout, section);
+            if (template is null)
+            {
+                throw new WarehousePlanException(
+                    "На листе «" + SheetSchema.PlanSheet + "» нет ни одной строки-образца, " +
+                    "по которой можно построить новую строку заказа.");
+            }
+
+            var insertBefore = section.DataRows.Count > 0 ? section.LastDataRow : section.HeaderRow + 1;
+            ExcelSheetOperations.InsertCopiedRow(application, planSheet, template.ExcelRow, insertBefore);
+            FillNewRow(planSheet, layout.Headers, insertBefore, spec);
+            _logger.Debug("Добавлена строка заказа " + spec.LoadNumber + " в строку " + insertBefore + ".");
+        }
+    }
+
+    /// <summary>
+    /// Строка-образец выбирается внутри того же блока. Предпочтение отдаётся нижней строке
+    /// реального заказа, у которой «Дата в сети» задана формулой: тогда новая строка получает
+    /// такие же формулы и оформление, как соседние строки блока.
+    /// </summary>
+    private static PlanRow? ChooseTemplateRow(PlanLayout layout, PlanSection section)
+    {
+        var candidates = section.DataRows.Where(row => row.IsOrderRow).ToList();
+        if (candidates.Count == 0)
+        {
+            candidates = layout.OrderSections
+                .SelectMany(s => s.DataRows)
+                .Where(row => row.IsOrderRow)
+                .ToList();
+        }
+
+        if (candidates.Count == 0)
+        {
+            return null;
+        }
+
+        bool HasNetworkDateFormula(PlanRow row) => row.FormulaColumns.Contains(SheetSchema.Plan.NetworkDate);
+
+        return candidates.LastOrDefault(row => HasNetworkDateFormula(row) && row.LoadNumber.HasValue)
+               ?? candidates.LastOrDefault(HasNetworkDateFormula)
+               ?? candidates.LastOrDefault(row => row.LoadNumber.HasValue)
+               ?? candidates[^1];
+    }
+
+    /// <summary>
+    /// Заполняет новую строку. Скопированные из образца формулы сохраняются,
+    /// значения, не заданные техническим заданием, очищаются.
+    /// </summary>
+    private static void FillNewRow(object planSheet, HeaderMap headers, int row, NewPlanRowSpec spec)
+    {
+        var firstColumn = headers.Columns.Values.Min();
+        var lastColumn = headers.Columns.Values.Max();
+        var formulas = ExcelSheetOperations.ReadRowFormulas(planSheet, row, firstColumn, lastColumn);
+
+        bool HasFormula(int column)
+        {
+            var index = column - firstColumn;
+            if (index < 0 || index >= formulas.Length)
+            {
+                return false;
+            }
+
+            var formula = formulas[index];
+            return formula is not null && formula.StartsWith("=", StringComparison.Ordinal);
+        }
+
+        foreach (var pair in headers.Columns)
+        {
+            var column = pair.Value;
+            if (HasFormula(column))
+            {
+                continue;
+            }
+
+            switch (pair.Key)
+            {
+                case SheetSchema.Plan.Supplies:
+                    ExcelSheetOperations.SetValue(planSheet, row, column, spec.Supplies);
+                    break;
+
+                case SheetSchema.Plan.Processing:
+                    if (spec.Processing.Length > 0)
+                    {
+                        ExcelSheetOperations.SetValue(planSheet, row, column, spec.Processing);
+                    }
+                    else
+                    {
+                        ExcelSheetOperations.ClearValue(planSheet, row, column);
+                    }
+
+                    break;
+
+                case SheetSchema.Plan.Comments:
+                    ExcelSheetOperations.SetValue(planSheet, row, column, spec.Comments);
+                    break;
+
+                case SheetSchema.Plan.DocumentDate:
+                    if (spec.DocumentDate.HasValue)
+                    {
+                        ExcelSheetOperations.SetValue(planSheet, row, column, spec.DocumentDate.Value);
+                    }
+                    else
+                    {
+                        ExcelSheetOperations.ClearValue(planSheet, row, column);
+                    }
+
+                    break;
+
+                case SheetSchema.Plan.LoadNumber:
+                    ExcelSheetOperations.SetValue(planSheet, row, column, (double)spec.LoadNumber);
+                    break;
+
+                case SheetSchema.Plan.Quantity:
+                    ExcelSheetOperations.SetValue(planSheet, row, column, 0d);
+                    break;
+
+                case SheetSchema.Plan.CompletionPercent:
+                    ExcelSheetOperations.SetValue(planSheet, row, column, 0d);
+                    break;
+
+                default:
+                    ExcelSheetOperations.ClearValue(planSheet, row, column);
+                    break;
+            }
+        }
+    }
+
+    private static void ApplyOrderUpdates(
+        object planSheet,
+        PlanLayout layout,
+        IReadOnlyList<OrderRowUpdate> updates)
+    {
+        if (updates.Count == 0)
+        {
+            return;
+        }
+
+        var byLoadNumber = new Dictionary<long, OrderRowUpdate>();
+        foreach (var update in updates)
+        {
+            byLoadNumber[update.LoadNumber] = update;
+        }
+
+        var quantityColumn = layout.Headers[SheetSchema.Plan.Quantity];
+        var statusColumn = layout.Headers[SheetSchema.Plan.Status];
+        var percentColumn = layout.Headers[SheetSchema.Plan.CompletionPercent];
+
+        foreach (var row in layout.OrderSections.SelectMany(section => section.DataRows))
+        {
+            if (!row.IsOrderRow || row.LoadNumber is null)
+            {
+                continue;
+            }
+
+            if (!byLoadNumber.TryGetValue(row.LoadNumber.Value, out var update))
+            {
+                continue;
+            }
+
+            ExcelSheetOperations.SetValue(planSheet, row.ExcelRow, quantityColumn, update.Quantity);
+
+            if (update.Status is not null)
+            {
+                ExcelSheetOperations.SetValue(planSheet, row.ExcelRow, statusColumn, update.Status);
+            }
+
+            if (update.CompletionPercent is not null)
+            {
+                ExcelSheetOperations.SetValue(planSheet, row.ExcelRow, percentColumn, update.CompletionPercent.Value);
+            }
+        }
+    }
+
+    private void ApplyAggregateUpdates(
+        object planSheet,
+        PlanLayout layout,
+        IReadOnlyList<AggregateUpdate> updates)
+    {
+        var quantityColumn = layout.Headers[SheetSchema.Plan.Quantity];
+
+        foreach (var update in updates)
+        {
+            var targetRow = ResolveAggregateRow(layout, update.Target);
+            if (targetRow is null)
+            {
+                _logger.Warning("Не найдена строка для итога " + update.Target + ", значение не записано.");
+                continue;
+            }
+
+            ExcelSheetOperations.SetValue(planSheet, targetRow.Value, quantityColumn, update.Quantity);
+        }
+    }
+
+    private static int? ResolveAggregateRow(PlanLayout layout, PlanAggregateTarget target) => target switch
+    {
+        PlanAggregateTarget.AutoHub => layout.AutoHubRow?.ExcelRow,
+        PlanAggregateTarget.Wholesale => layout.Section(PlanSectionKind.Wholesale)?.HeaderRow,
+        PlanAggregateTarget.InternetShop => layout.Section(PlanSectionKind.InternetShop)?.HeaderRow,
+        PlanAggregateTarget.MarketplaceFromStorage => layout.MarketplaceFromStorage?.ExcelRow,
+        PlanAggregateTarget.MarketplaceFromReturns => layout.MarketplaceFromReturns?.ExcelRow,
+        PlanAggregateTarget.MarketplaceFromSupplies => layout.MarketplaceFromSupplies?.ExcelRow,
+        _ => null,
+    };
+
+    private void RepairAggregateFormulas(
+        object planSheet,
+        IReadOnlyDictionary<PlanSectionKind, (string? AggregateFormula, int FirstDataRow)> original)
+    {
+        var layout = ReadPlanLayout(planSheet);
+        var quantityColumn = layout.Headers[SheetSchema.Plan.Quantity];
+
+        foreach (var section in layout.OrderSections)
+        {
+            if (section.DataRows.Count == 0 ||
+                !original.TryGetValue(section.Kind, out var info) ||
+                info.AggregateFormula is null)
+            {
+                continue;
+            }
+
+            var repaired = AggregateFormulaRepair.BuildRepairedFormula(
+                info.AggregateFormula,
+                info.FirstDataRow,
+                section.FirstDataRow,
+                section.LastDataRow);
+
+            if (repaired is null)
+            {
+                continue;
+            }
+
+            var current = ExcelSheetOperations.GetFormula(planSheet, section.HeaderRow, quantityColumn);
+            if (string.Equals(current, repaired, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            ExcelSheetOperations.SetFormula(planSheet, section.HeaderRow, quantityColumn, repaired);
+            _logger.Debug("Итоговая формула блока " + section.Kind + " приведена к виду " + repaired + ".");
+        }
+    }
+
+    private string BuildOutputPath(string sourceFilePath)
+    {
+        var directory = Path.GetDirectoryName(Path.GetFullPath(sourceFilePath));
+        if (string.IsNullOrEmpty(directory))
+        {
+            throw new WarehousePlanException("Не удалось определить папку исходного файла.");
+        }
+
+        var name = Path.GetFileNameWithoutExtension(sourceFilePath);
+        var extension = Path.GetExtension(sourceFilePath);
+        var stamp = _nowProvider().ToString("yyyy-MM-dd_HHmmss", CultureInfo.InvariantCulture);
+
+        var candidate = Path.Combine(directory, name + "_готово_" + stamp + extension);
+        var attempt = 1;
+        while (File.Exists(candidate))
+        {
+            candidate = Path.Combine(
+                directory,
+                name + "_готово_" + stamp + "_" + attempt.ToString(CultureInfo.InvariantCulture) + extension);
+            attempt++;
+        }
+
+        return candidate;
+    }
+
+    private void TryDeleteFile(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch (IOException ex)
+        {
+            _logger.Warning("Не удалось удалить частичный результат " + path + ".", ex);
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            _logger.Warning("Нет прав на удаление частичного результата " + path + ".", ex);
+        }
+    }
+
+    private static void Report(IProgress<ProcessingStage>? progress, string message, int percent) =>
+        progress?.Report(new ProcessingStage(message, percent));
+}

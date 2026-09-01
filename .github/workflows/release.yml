@@ -1,0 +1,105 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  PUBLISH_DIR: artifacts/publish
+  PACKAGE_DIR: artifacts/package
+
+jobs:
+  release:
+    name: Сборка дистрибутива Windows x64
+    runs-on: windows-latest
+
+    steps:
+      - name: Получение исходного кода
+        uses: actions/checkout@v4
+
+      - name: Установка .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Определение версии
+        id: version
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF -like 'refs/tags/v*') {
+            $version = $env:GITHUB_REF -replace '^refs/tags/v', ''
+          } else {
+            $version = '0.0.0-build.' + $env:GITHUB_RUN_NUMBER
+          }
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "Версия сборки: $version"
+
+      - name: Восстановление пакетов
+        run: dotnet restore WarehousePlanAutomation.sln
+
+      - name: Тесты
+        run: dotnet test WarehousePlanAutomation.sln --configuration Release
+
+      - name: Публикация Windows x64 (self-contained)
+        run: >
+          dotnet publish src/WarehousePlanAutomation.App/WarehousePlanAutomation.App.csproj
+          --configuration Release
+          --runtime win-x64
+          --self-contained true
+          --output ${{ env.PUBLISH_DIR }}
+          -p:PublishSingleFile=false
+          -p:PublishTrimmed=false
+          -p:DebugType=none
+
+      - name: Добавление README в дистрибутив
+        shell: pwsh
+        run: Copy-Item README.md -Destination "$env:PUBLISH_DIR/README.md"
+
+      - name: Упаковка в ZIP
+        id: package
+        shell: pwsh
+        run: |
+          $version = '${{ steps.version.outputs.version }}'
+          $name = "WarehousePlanAutomation-$version-win-x64.zip"
+          New-Item -ItemType Directory -Force -Path $env:PACKAGE_DIR | Out-Null
+          $zip = Join-Path $env:PACKAGE_DIR $name
+          Compress-Archive -Path "$env:PUBLISH_DIR/*" -DestinationPath $zip -Force
+          "name=$name" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "path=$zip" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Get-Item $zip | Select-Object Name, Length
+
+      - name: Загрузка артефакта сборки
+        uses: actions/upload-artifact@v4
+        with:
+          name: WarehousePlanAutomation-win-x64
+          path: ${{ env.PACKAGE_DIR }}/*.zip
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Создание релиза и прикрепление ZIP
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $version = '${{ steps.version.outputs.version }}'
+          $zip = '${{ steps.package.outputs.path }}'
+          $notes = @(
+            'Готовый дистрибутив «Формирование плана склада» для Windows x64.',
+            '',
+            'Установка не требуется: скачайте ZIP, распакуйте в любую папку и запустите WarehousePlanAutomation.exe.',
+            '',
+            'Требования: Windows x64 и установленный Microsoft Excel.',
+            'Отдельная установка .NET не нужна: сборка self-contained.'
+          ) -join "`n"
+          $notesFile = Join-Path $env:RUNNER_TEMP 'release-notes.md'
+          $notes | Out-File -FilePath $notesFile -Encoding utf8
+          gh release create "v$version" $zip --title "v$version" --notes-file $notesFile
