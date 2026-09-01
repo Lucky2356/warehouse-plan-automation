@@ -19,16 +19,21 @@ public sealed class JournalSheet
 
 public static class JournalSheetReader
 {
-    public static JournalSheet Read(SheetGrid grid)
+    public static HeaderMap ResolveHeaders(SheetGrid grid) =>
+        HeaderResolver.Resolve(grid, SheetSchema.JournalSheet, SheetSchema.Journal.Specs);
+
+    /// <summary>
+    /// Разбирает строки журнала из прочитанного фрагмента листа.
+    /// Физический порядок строк сохраняется: он определяет первое вхождение заказа.
+    /// </summary>
+    public static void ReadRows(SheetGrid grid, HeaderMap headers, ICollection<JournalRow> destination, ref int order)
     {
-        var headers = HeaderResolver.Resolve(grid, SheetSchema.JournalSheet, SheetSchema.Journal.Specs);
         var commentColumn = headers[SheetSchema.Journal.Comment];
         var statusColumn = headers[SheetSchema.Journal.Status];
         var percentColumn = headers[SheetSchema.Journal.Percent];
 
-        var rows = new List<JournalRow>();
-        var order = 0;
-        for (var row = headers.HeaderRow + 1; row <= grid.LastRow; row++)
+        var firstRow = Math.Max(grid.FirstRow, headers.HeaderRow + 1);
+        for (var row = firstRow; row <= grid.LastRow; row++)
         {
             var comment = TextUtils.Normalize(grid.Text(row, commentColumn));
             var status = TextUtils.Normalize(grid.Text(row, statusColumn));
@@ -39,9 +44,16 @@ public static class JournalSheetReader
                 continue;
             }
 
-            rows.Add(new JournalRow(order++, row, comment, status, percent));
+            destination.Add(new JournalRow(order++, row, comment, status, percent));
         }
+    }
 
+    public static JournalSheet Read(SheetGrid grid)
+    {
+        var headers = ResolveHeaders(grid);
+        var rows = new List<JournalRow>();
+        var order = 0;
+        ReadRows(grid, headers, rows, ref order);
         return new JournalSheet(headers, rows);
     }
 }

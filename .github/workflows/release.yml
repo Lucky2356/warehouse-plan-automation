@@ -48,39 +48,44 @@ jobs:
       - name: Тесты
         run: dotnet test WarehousePlanAutomation.sln --configuration Release
 
-      - name: Публикация Windows x64 (self-contained)
+      - name: Публикация в один файл (Windows x64, self-contained)
         run: >
           dotnet publish src/WarehousePlanAutomation.App/WarehousePlanAutomation.App.csproj
           --configuration Release
           --runtime win-x64
           --self-contained true
           --output ${{ env.PUBLISH_DIR }}
-          -p:PublishSingleFile=false
+          -p:PublishSingleFile=true
+          -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:EnableCompressionInSingleFile=true
+          -p:BuiltInComInteropSupport=true
           -p:PublishTrimmed=false
           -p:DebugType=none
 
-      - name: Добавление README в дистрибутив
-        shell: pwsh
-        run: Copy-Item README.md -Destination "$env:PUBLISH_DIR/README.md"
-
-      - name: Упаковка в ZIP
+      - name: Подготовка файла к публикации
         id: package
         shell: pwsh
         run: |
           $version = '${{ steps.version.outputs.version }}'
-          $name = "WarehousePlanAutomation-$version-win-x64.zip"
+          $published = Join-Path $env:PUBLISH_DIR 'WarehousePlanAutomation.exe'
+          if (-not (Test-Path $published)) { throw "Не найден $published" }
+
+          $extra = Get-ChildItem $env:PUBLISH_DIR -File | Where-Object { $_.Name -ne 'WarehousePlanAutomation.exe' }
+          if ($extra) { throw "Публикация вернула больше одного файла: $($extra.Name -join ', ')" }
+
+          $name = "WarehousePlanAutomation-$version-win-x64.exe"
           New-Item -ItemType Directory -Force -Path $env:PACKAGE_DIR | Out-Null
-          $zip = Join-Path $env:PACKAGE_DIR $name
-          Compress-Archive -Path "$env:PUBLISH_DIR/*" -DestinationPath $zip -Force
+          $target = Join-Path $env:PACKAGE_DIR $name
+          Copy-Item $published -Destination $target
           "name=$name" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-          "path=$zip" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-          Get-Item $zip | Select-Object Name, Length
+          "path=$target" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Get-Item $target | Select-Object Name, Length
 
       - name: Загрузка артефакта сборки
         uses: actions/upload-artifact@v7
         with:
           name: WarehousePlanAutomation-win-x64
-          path: ${{ env.PACKAGE_DIR }}/*.zip
+          path: ${{ env.PACKAGE_DIR }}/*.exe
           if-no-files-found: error
           retention-days: 30
 
@@ -91,15 +96,15 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $version = '${{ steps.version.outputs.version }}'
-          $zip = '${{ steps.package.outputs.path }}'
+          $exe = '${{ steps.package.outputs.path }}'
           $notes = @(
-            'Готовый дистрибутив «Формирование плана склада» для Windows x64.',
+            'Готовая программа «Формирование плана склада» для Windows x64.',
             '',
-            'Установка не требуется: скачайте ZIP, распакуйте в любую папку и запустите WarehousePlanAutomation.exe.',
+            'Скачайте единственный .exe и запустите - установка и распаковка не нужны.',
             '',
-            'Требования: Windows x64 и установленный Microsoft Excel.',
-            'Отдельная установка .NET не нужна: сборка self-contained.'
+            'Требования: Windows x64 и установленный Microsoft Excel (2016 и новее, включая 2021 и 365).',
+            'Отдельная установка .NET не нужна: всё встроено в файл.'
           ) -join "`n"
           $notesFile = Join-Path $env:RUNNER_TEMP 'release-notes.md'
           $notes | Out-File -FilePath $notesFile -Encoding utf8
-          gh release create "v$version" $zip --title "v$version" --notes-file $notesFile
+          gh release create "v$version" $exe --title "v$version" --notes-file $notesFile

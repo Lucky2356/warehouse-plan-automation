@@ -59,6 +59,9 @@ public class OrderClassifierTests
     [InlineData("Ламода")]
     [InlineData("Сбер Мега Маркет")]
     [InlineData("Екатеринбург Яблоко")]
+    [InlineData("Магнит")]
+    [InlineData("Магнит Москва")]
+    [InlineData("ТС Магнит")]
     public void Маркетплейсы_РаспознаютсяВоВсехНаписаниях(string division)
     {
         var rows = new[] { Row(2, division, "Подтоварка микс приоритет к 10.08", 25) };
@@ -67,6 +70,28 @@ public class OrderClassifierTests
 
         Assert.Equal(25d, result.Total(OrderCategory.MarketplaceStorage));
         Assert.Empty(result.Leftovers);
+    }
+
+    [Theory]
+    [InlineData("Магнитогорск-М96")]
+    [InlineData("Магнитогорск-М12")]
+    public void Магнитогорск_НеСчитаетсяМаркетплейсом(string division)
+    {
+        // «Магнит» ищется как отдельное слово, иначе обычный магазин Магнитогорска
+        // попал бы в итоги маркетплейсов.
+        var rows = new[]
+        {
+            Row(2, division, "Подтоварка ШПП Номер загрузки 55575395 <Подбор:>", 40),
+        };
+
+        var result = OrderClassifier.Classify(rows);
+
+        Assert.Equal(0d, result.Total(OrderCategory.MarketplaceStorage));
+        Assert.Equal(0d, result.Total(OrderCategory.MarketplaceSupplies));
+        Assert.Equal(0d, result.Total(OrderCategory.MarketplaceReturns));
+        var group = Assert.Single(result.Groups);
+        Assert.Equal(55575395L, group.LoadNumber);
+        Assert.Equal(40d, group.Quantity);
     }
 
     [Fact]
@@ -106,6 +131,12 @@ public class OrderClassifierTests
     [InlineData("Заказ на магазин 001 из заказов МП автозаказ Номер загрузки 55386696")]
     [InlineData("СЗ798-154(шапки), почта Росс, виртуально, 1 место Номер загрузки 55050468")]
     [InlineData("на фото, оставят в офисе для работы, со склада списать арт.140-349")]
+    [InlineData("на образцы, хранение на складе СЗ985-062 (тапки)")]
+    [InlineData("1180-008 в ОФис на ремонт с возвратом.")]
+    [InlineData("В Офис 1180-008 Ремонт с возвратом WB")]
+    [InlineData("Укомплектовать в наборы МЗ541-027 (палантин+брошь). Списать со склада.")]
+    [InlineData("Маркировка.")]
+    [InlineData("Виртуальный возврат")]
     public void СлужебныеСтроки_УдаляютсяБезПереноса(string comment)
     {
         var rows = new[] { Row(2, "Новосибирск-M77a", comment, 12) };
@@ -140,9 +171,10 @@ public class OrderClassifierTests
     [Fact]
     public void СтрокиБезНомераЗагрузки_ОстаютсяДляРучнойПроверки()
     {
+        // Ни служебного слова, ни номера загрузки: строку разбирают вручную.
         var rows = new[]
         {
-            Row(2, "Склад-А", "на образцы, хранение на складе СЗ985-062 (тапки)", 5),
+            Row(2, "Склад-А", "Перемещение между зонами хранения", 5),
             Row(3, "Москва-M149", "Подтоварка Номер загрузки 55575395", 8),
         };
 

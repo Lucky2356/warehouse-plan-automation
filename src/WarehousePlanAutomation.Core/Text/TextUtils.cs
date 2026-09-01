@@ -70,6 +70,39 @@ public static class TextUtils
     public static bool ContainsKey(string? value, string normalizedNeedle) =>
         NormalizeKey(value).Contains(normalizedNeedle, StringComparison.Ordinal);
 
+    /// <summary>
+    /// Вхождение как отдельного слова: соседние символы не должны быть буквами или цифрами.
+    /// Нужно для коротких названий, которые встречаются внутри других слов:
+    /// «Магнит» является маркетплейсом, а «Магнитогорск-М96» - обычный магазин.
+    /// </summary>
+    public static bool ContainsWord(string? value, string normalizedNeedle)
+    {
+        if (normalizedNeedle.Length == 0)
+        {
+            return false;
+        }
+
+        var key = NormalizeKey(value);
+        var index = key.IndexOf(normalizedNeedle, StringComparison.Ordinal);
+        while (index >= 0)
+        {
+            var startsWord = index == 0 || !IsWordCharacter(key[index - 1]);
+            var endIndex = index + normalizedNeedle.Length;
+            var endsWord = endIndex >= key.Length || !IsWordCharacter(key[endIndex]);
+
+            if (startsWord && endsWord)
+            {
+                return true;
+            }
+
+            index = key.IndexOf(normalizedNeedle, index + 1, StringComparison.Ordinal);
+        }
+
+        return false;
+    }
+
+    private static bool IsWordCharacter(char value) => char.IsLetterOrDigit(value);
+
     public static bool ContainsAnyKey(string? value, IEnumerable<string> normalizedNeedles)
     {
         var key = NormalizeKey(value);

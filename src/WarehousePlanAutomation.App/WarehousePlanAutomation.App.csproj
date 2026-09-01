@@ -8,8 +8,18 @@
     <AssemblyName>WarehousePlanAutomation</AssemblyName>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
-    <!-- Публикация выполняется в папку: это самый надёжный вариант для WPF и COM-автоматизации. -->
-    <PublishSingleFile>false</PublishSingleFile>
+
+    <!--
+      Публикация в один исполняемый файл: пользователь скачивает и запускает единственный .exe.
+      BuiltInComInteropSupport обязателен: в режиме одного файла встроенная поддержка COM
+      по умолчанию отключается, и позднее связывание с Excel.Application перестаёт работать
+      с ошибкой «System.__ComObject does not contain a definition for ...».
+      Обрезка (PublishTrimmed) недопустима: позднее связывание не поддаётся статическому анализу.
+    -->
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <BuiltInComInteropSupport>true</BuiltInComInteropSupport>
     <PublishTrimmed>false</PublishTrimmed>
     <PublishReadyToRun>false</PublishReadyToRun>
   </PropertyGroup>

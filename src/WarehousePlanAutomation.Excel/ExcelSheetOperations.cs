@@ -1,8 +1,18 @@
 using System.Globalization;
+using System.Runtime.InteropServices;
+using Microsoft.CSharp.RuntimeBinder;
 using WarehousePlanAutomation.Core.Sheets;
 using WarehousePlanAutomation.Core.Text;
 
 namespace WarehousePlanAutomation.Excel;
+
+/// <summary>Границы прямоугольника листа в абсолютных координатах Excel.</summary>
+internal readonly record struct SheetBounds(int FirstRow, int FirstColumn, int RowCount, int ColumnCount)
+{
+    public int LastRow => FirstRow + RowCount - 1;
+
+    public int LastColumn => FirstColumn + ColumnCount - 1;
+}
 
 /// <summary>
 /// Низкоуровневые операции над листом Excel. Каждая операция берёт только те COM-объекты,
@@ -54,6 +64,67 @@ internal static class ExcelSheetOperations
         var formulas = withFormulas ? ToStringArray(rawFormulas, rowCount, columnCount) : null;
 
         return new SheetGrid(firstRow, firstColumn, values, formulas);
+    }
+
+    /// <summary>Границы использованного диапазона листа. Данные при этом не передаются.</summary>
+    public static SheetBounds GetUsedBounds(object sheetObject)
+    {
+        dynamic sheet = sheetObject;
+        using var scope = new ComScope();
+        dynamic used = scope.Track(sheet.UsedRange);
+        int firstRow = used.Row;
+        int firstColumn = used.Column;
+        dynamic usedRows = scope.Track(used.Rows);
+        int rowCount = usedRows.Count;
+        dynamic usedColumns = scope.Track(used.Columns);
+        int columnCount = usedColumns.Count;
+        return new SheetBounds(firstRow, firstColumn, rowCount, columnCount);
+    }
+
+    /// <summary>
+    /// Последняя заполненная строка колонки. Использованный диапазон Excel часто оказывается
+    /// намного больше фактических данных, и без этой проверки пришлось бы читать пустые строки.
+    /// </summary>
+    public static int GetLastFilledRow(object sheetObject, int column, int fallbackLastRow)
+    {
+        dynamic sheet = sheetObject;
+        using var scope = new ComScope();
+        dynamic sheetRows = scope.Track(sheet.Rows);
+        int sheetRowCount = sheetRows.Count;
+        dynamic cells = scope.Track(sheet.Cells);
+        dynamic bottom = scope.Track(cells[sheetRowCount, column]);
+        dynamic last = scope.Track(bottom.End(ExcelConstants.XlUp));
+        int lastRow = last.Row;
+        return Math.Min(Math.Max(lastRow, 1), fallbackLastRow);
+    }
+
+    /// <summary>Читает прямоугольный фрагмент листа. Позволяет обрабатывать лист по частям.</summary>
+    public static SheetGrid ReadBlock(
+        object sheetObject,
+        int firstRow,
+        int lastRow,
+        int firstColumn,
+        int lastColumn,
+        bool withFormulas)
+    {
+        dynamic sheet = sheetObject;
+        using var scope = new ComScope();
+        var reference =
+            ExcelColumn.ToLetters(firstColumn) + firstRow.ToString(CultureInfo.InvariantCulture) + ":" +
+            ExcelColumn.ToLetters(lastColumn) + lastRow.ToString(CultureInfo.InvariantCulture);
+        dynamic range = scope.Track(sheet.Range[reference]);
+
+        object? rawValues = range.Value2;
+        object? rawFormulas = withFormulas ? range.Formula : null;
+
+        var rowCount = lastRow - firstRow + 1;
+        var columnCount = lastColumn - firstColumn + 1;
+
+        return new SheetGrid(
+            firstRow,
+            firstColumn,
+            ToObjectArray(rawValues, rowCount, columnCount),
+            withFormulas ? ToStringArray(rawFormulas, rowCount, columnCount) : null);
     }
 
     public static string?[] ReadRowFormulas(object sheetObject, int row, int firstColumn, int lastColumn)
@@ -140,8 +211,36 @@ internal static class ExcelSheetOperations
         return true;
     }
 
-    /// <summary>Удаляет строки снизу вверх непрерывными блоками.</summary>
-    public static int DeleteRows(object sheetObject, IEnumerable<int> rows)
+    /// <summary>
+    /// Разделитель областей в адресе диапазона. Excel берёт его из настроек локали,
+    /// поэтому на русской системе это «;», а не «,», и жёстко задавать его нельзя.
+    /// </summary>
+    public static string GetListSeparator(object applicationObject)
+    {
+        dynamic application = applicationObject;
+        try
+        {
+            object? value = application.International(ExcelConstants.XlListSeparator);
+            var separator = value as string;
+            return string.IsNullOrEmpty(separator) ? "," : separator;
+        }
+        catch (RuntimeBinderException)
+        {
+            return ",";
+        }
+        catch (COMException)
+        {
+            return ",";
+        }
+    }
+
+    /// <summary>
+    /// Удаляет строки снизу вверх. Смежные строки объединяются в блоки, а блоки - в пачки:
+    /// за один вызов Delete удаляется столько областей, сколько помещается в адрес диапазона
+    /// (Excel ограничивает его 255 символами). На больших выгрузках это примерно вдвое быстрее,
+    /// чем удаление каждого блока по отдельности.
+    /// </summary>
+    public static int DeleteRows(object sheetObject, IEnumerable<int> rows, string listSeparator)
     {
         dynamic sheet = sheetObject;
         var ordered = rows.Distinct().OrderBy(r => r).ToList();
@@ -150,33 +249,57 @@ internal static class ExcelSheetOperations
             return 0;
         }
 
-        var blocks = new List<(int Start, int End)>();
-        var start = ordered[0];
-        var previous = ordered[0];
+        var blocks = BuildContiguousBlocks(ordered);
+        const int addressBudget = 240;
 
-        for (var i = 1; i < ordered.Count; i++)
+        var index = blocks.Count - 1;
+        while (index >= 0)
         {
-            if (ordered[i] == previous + 1)
+            var parts = new List<string>();
+            var length = 0;
+
+            while (index >= 0)
             {
-                previous = ordered[i];
-                continue;
+                var part = RowReference(blocks[index].Start, blocks[index].End);
+                if (parts.Count > 0 && length + listSeparator.Length + part.Length > addressBudget)
+                {
+                    break;
+                }
+
+                parts.Add(part);
+                length += part.Length + listSeparator.Length;
+                index--;
             }
 
-            blocks.Add((start, previous));
-            start = ordered[i];
-            previous = ordered[i];
-        }
-
-        blocks.Add((start, previous));
-
-        for (var i = blocks.Count - 1; i >= 0; i--)
-        {
             using var scope = new ComScope();
-            dynamic range = scope.Track(sheet.Range[RowReference(blocks[i].Start, blocks[i].End)]);
+            dynamic range = scope.Track(sheet.Range[string.Join(listSeparator, parts)]);
             range.Delete();
         }
 
         return ordered.Count;
+    }
+
+    private static List<(int Start, int End)> BuildContiguousBlocks(IReadOnlyList<int> orderedRows)
+    {
+        var blocks = new List<(int Start, int End)>();
+        var start = orderedRows[0];
+        var previous = orderedRows[0];
+
+        for (var i = 1; i < orderedRows.Count; i++)
+        {
+            if (orderedRows[i] == previous + 1)
+            {
+                previous = orderedRows[i];
+                continue;
+            }
+
+            blocks.Add((start, previous));
+            start = orderedRows[i];
+            previous = orderedRows[i];
+        }
+
+        blocks.Add((start, previous));
+        return blocks;
     }
 
     /// <summary>Копирует строку-шаблон и вставляет копию перед указанной строкой.</summary>

@@ -19,16 +19,22 @@ public sealed class OrdersSheet
 
 public static class OrdersSheetReader
 {
-    public static OrdersSheet Read(SheetGrid grid)
+    public static HeaderMap ResolveHeaders(SheetGrid grid) =>
+        HeaderResolver.Resolve(grid, SheetSchema.OrdersSheet, SheetSchema.Orders.Specs);
+
+    /// <summary>
+    /// Разбирает строки данных из прочитанного фрагмента листа.
+    /// Позволяет читать большие выгрузки по частям, не держа весь лист в памяти.
+    /// </summary>
+    public static void ReadRows(SheetGrid grid, HeaderMap headers, ICollection<OrderRow> destination)
     {
-        var headers = HeaderResolver.Resolve(grid, SheetSchema.OrdersSheet, SheetSchema.Orders.Specs);
         var divisionColumn = headers[SheetSchema.Orders.Division];
         var commentColumn = headers[SheetSchema.Orders.Comment];
         var differenceColumn = headers[SheetSchema.Orders.DifferenceUnits];
         var documentDateColumn = headers[SheetSchema.Orders.DocumentDate];
 
-        var rows = new List<OrderRow>();
-        for (var row = headers.HeaderRow + 1; row <= grid.LastRow; row++)
+        var firstRow = Math.Max(grid.FirstRow, headers.HeaderRow + 1);
+        for (var row = firstRow; row <= grid.LastRow; row++)
         {
             var division = TextUtils.Normalize(grid.Text(row, divisionColumn));
             var comment = TextUtils.Normalize(grid.Text(row, commentColumn));
@@ -40,9 +46,15 @@ public static class OrdersSheetReader
                 continue;
             }
 
-            rows.Add(new OrderRow(row, division, comment, difference ?? 0d, documentDate));
+            destination.Add(new OrderRow(row, division, comment, difference ?? 0d, documentDate));
         }
+    }
 
+    public static OrdersSheet Read(SheetGrid grid)
+    {
+        var headers = ResolveHeaders(grid);
+        var rows = new List<OrderRow>();
+        ReadRows(grid, headers, rows);
         return new OrdersSheet(headers, rows);
     }
 }

@@ -16,6 +16,12 @@ public sealed class ExcelWorkbookProcessor : IWorkbookProcessor
 {
     private static readonly string[] SupportedExtensions = { ".xlsx", ".xlsm", ".xlsb", ".xls" };
 
+    /// <summary>Сколько первых строк листа просматривается в поиске строки заголовков.</summary>
+    private const int HeaderScanRows = 15;
+
+    /// <summary>Размер порции строк при чтении больших листов.</summary>
+    private const int ChunkRows = 50000;
+
     private readonly IAppLogger _logger;
     private readonly Func<DateTime> _nowProvider;
 
@@ -96,8 +102,23 @@ public sealed class ExcelWorkbookProcessor : IWorkbookProcessor
             cancellationToken.ThrowIfCancellationRequested();
 
             Report(progress, "Чтение данных", 15);
-            var orders = OrdersSheetReader.Read(ExcelSheetOperations.ReadGrid(sheets.Orders, withFormulas: false));
-            var journal = JournalSheetReader.Read(ExcelSheetOperations.ReadGrid(sheets.Journal, withFormulas: false));
+            var listSeparator = ExcelSheetOperations.GetListSeparator(applicationObject);
+
+            // Отбор автофильтра снимается до чтения: при активном отборе поиск последней
+            // заполненной строки останавливается на последней видимой, и часть данных
+            // не попала бы в обработку. Удаление строк при активном отборе тоже неполное.
+            if (ExcelSheetOperations.ShowAllRows(sheets.Orders))
+            {
+                _logger.Information("На листе «" + SheetSchema.OrdersSheet + "» снят отбор автофильтра.");
+            }
+
+            if (ExcelSheetOperations.ShowAllRows(sheets.Plan))
+            {
+                _logger.Information("На листе «" + SheetSchema.PlanSheet + "» снят отбор автофильтра.");
+            }
+
+            var orders = ReadOrdersSheet(sheets.Orders);
+            var journal = ReadJournalSheet(sheets.Journal);
             var planLayout = ReadPlanLayout(sheets.Plan);
             _logger.Information(
                 "Прочитано строк: выгрузка " + orders.Rows.Count +
@@ -120,24 +141,11 @@ public sealed class ExcelWorkbookProcessor : IWorkbookProcessor
 
             cancellationToken.ThrowIfCancellationRequested();
             Report(progress, "Удаление обработанных строк выгрузки", 45);
-
-            // Отбор автофильтра снимается только на изменяемых листах: при активном отборе
-            // Excel удаляет строки лишь в видимой части диапазона.
-            if (ExcelSheetOperations.ShowAllRows(sheets.Orders))
-            {
-                _logger.Information("На листе «" + SheetSchema.OrdersSheet + "» снят отбор автофильтра.");
-            }
-
-            if (ExcelSheetOperations.ShowAllRows(sheets.Plan))
-            {
-                _logger.Information("На листе «" + SheetSchema.PlanSheet + "» снят отбор автофильтра.");
-            }
-
-            ExcelSheetOperations.DeleteRows(sheets.Orders, classification.RowsToDelete);
+            ExcelSheetOperations.DeleteRows(sheets.Orders, classification.RowsToDelete, listSeparator);
 
             cancellationToken.ThrowIfCancellationRequested();
             Report(progress, "Обновление листа «План»", 60);
-            ExcelSheetOperations.DeleteRows(sheets.Plan, update.PlanRowsToDelete);
+            ExcelSheetOperations.DeleteRows(sheets.Plan, update.PlanRowsToDelete, listSeparator);
 
             InsertNewRows(applicationObject, sheets.Plan, update.NewRows);
             planLayout = ReadPlanLayout(sheets.Plan);
@@ -245,6 +253,80 @@ public sealed class ExcelWorkbookProcessor : IWorkbookProcessor
 
     private static PlanLayout ReadPlanLayout(object planSheet) =>
         PlanSheetReader.Read(ExcelSheetOperations.ReadGrid(planSheet, withFormulas: true));
+
+    /// <summary>
+    /// Читает выгрузку заказов по частям. Из листа берутся только колонки, которые нужны
+    /// правилам, и только строки до последней заполненной: это не даёт большому файлу
+    /// целиком оказаться в памяти и отсекает раздутый использованный диапазон.
+    /// </summary>
+    private OrdersSheet ReadOrdersSheet(object ordersSheet)
+    {
+        var bounds = ExcelSheetOperations.GetUsedBounds(ordersSheet);
+        var headerGrid = ExcelSheetOperations.ReadBlock(
+            ordersSheet,
+            bounds.FirstRow,
+            Math.Min(bounds.FirstRow + HeaderScanRows - 1, bounds.LastRow),
+            bounds.FirstColumn,
+            bounds.LastColumn,
+            withFormulas: false);
+
+        var headers = OrdersSheetReader.ResolveHeaders(headerGrid);
+        var firstColumn = headers.Columns.Values.Min();
+        var lastColumn = headers.Columns.Values.Max();
+
+        var lastRow = Math.Min(
+            bounds.LastRow,
+            Math.Max(
+                ExcelSheetOperations.GetLastFilledRow(
+                    ordersSheet, headers[SheetSchema.Orders.Comment], bounds.LastRow),
+                ExcelSheetOperations.GetLastFilledRow(
+                    ordersSheet, headers[SheetSchema.Orders.Division], bounds.LastRow)));
+
+        var rows = new List<OrderRow>();
+        for (var start = headers.HeaderRow + 1; start <= lastRow; start += ChunkRows)
+        {
+            var end = Math.Min(start + ChunkRows - 1, lastRow);
+            var chunk = ExcelSheetOperations.ReadBlock(
+                ordersSheet, start, end, firstColumn, lastColumn, withFormulas: false);
+            OrdersSheetReader.ReadRows(chunk, headers, rows);
+        }
+
+        return new OrdersSheet(headers, rows);
+    }
+
+    /// <summary>Читает журнал по тем же правилам. Порядок строк сохраняется.</summary>
+    private JournalSheet ReadJournalSheet(object journalSheet)
+    {
+        var bounds = ExcelSheetOperations.GetUsedBounds(journalSheet);
+        var headerGrid = ExcelSheetOperations.ReadBlock(
+            journalSheet,
+            bounds.FirstRow,
+            Math.Min(bounds.FirstRow + HeaderScanRows - 1, bounds.LastRow),
+            bounds.FirstColumn,
+            bounds.LastColumn,
+            withFormulas: false);
+
+        var headers = JournalSheetReader.ResolveHeaders(headerGrid);
+        var firstColumn = headers.Columns.Values.Min();
+        var lastColumn = headers.Columns.Values.Max();
+
+        var lastRow = Math.Min(
+            bounds.LastRow,
+            ExcelSheetOperations.GetLastFilledRow(
+                journalSheet, headers[SheetSchema.Journal.Comment], bounds.LastRow));
+
+        var rows = new List<JournalRow>();
+        var order = 0;
+        for (var start = headers.HeaderRow + 1; start <= lastRow; start += ChunkRows)
+        {
+            var end = Math.Min(start + ChunkRows - 1, lastRow);
+            var chunk = ExcelSheetOperations.ReadBlock(
+                journalSheet, start, end, firstColumn, lastColumn, withFormulas: false);
+            JournalSheetReader.ReadRows(chunk, headers, rows, ref order);
+        }
+
+        return new JournalSheet(headers, rows);
+    }
 
     private void InsertNewRows(object application, object planSheet, IReadOnlyList<NewPlanRowSpec> specs)
     {
