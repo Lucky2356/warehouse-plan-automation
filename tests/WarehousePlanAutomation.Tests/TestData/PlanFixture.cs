@@ -57,6 +57,40 @@ public static class PlanFixture
 
     public static PlanLayout BuildLayout() => PlanSheetReader.Read(BuildGrid());
 
+    /// <summary>
+    /// Тот же лист, но с пустой строкой внутри блока «все группы»:
+    /// строки блока перестают идти подряд.
+    /// </summary>
+    public static PlanLayout BuildLayoutWithGapInAllGroups()
+    {
+        var rows = new List<object?[]>
+        {
+            Header(),
+            Section("все группы"),
+            DataRow(1, "Приемка на хранилище от 24.08", quantity: 4334),
+            DataRow(2, "Автозаказы для ХАБов", quantity: 42000),
+            new object?[17],
+            DataRow(3, "1100-026, 028 Обувь МОНО_в рознице с 1.10",
+                loadNumber: ExistingMonoLoadNumber, quantity: 324, percent: 0, networkDate: 46296),
+            DataRow(4, "1100-026, 028 Обувь СЕТ1_в рознице с 1.10",
+                loadNumber: ExistingSetLoadNumber, quantity: 576, percent: 0, networkDate: 46296),
+            Section("возвраты"),
+            DataRow(1, "Зимняя обувь_ликвиды_с хранилища, возвратов",
+                loadNumber: ExistingReturnLoadNumber, quantity: 3610, percent: 0, networkDate: 46296),
+            Section("приемка на хранилище"),
+            DataRow(1, "Сезонный товар FW26-27_приемка на хранилище_2 приоритет",
+                loadNumber: ExistingStorageLoadNumber, quantity: 5914, percent: 0, networkDate: 46268),
+            Section("заказы МП"),
+            MarketplaceRow("с хранилища и хранения", 2339),
+            MarketplaceRow("из возвратов", 5281),
+            MarketplaceRow("из поставок", 13191),
+            Section("заказы Опт", 4590),
+            Section("заказы ИМ", 125),
+        };
+
+        return PlanSheetReader.Read(new SheetGrid(1, 1, ToArray(rows)));
+    }
+
     private static object?[] Header() => new object?[]
     {
         "№", "Поставки", "Обработка", "Группа", "Комментарий", "Дата документа", "Сроки выполнения",

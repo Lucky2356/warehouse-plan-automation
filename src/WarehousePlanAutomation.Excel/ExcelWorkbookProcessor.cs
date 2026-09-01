@@ -5,6 +5,7 @@ using WarehousePlanAutomation.Core.Logging;
 using WarehousePlanAutomation.Core.Models;
 using WarehousePlanAutomation.Core.Processing;
 using WarehousePlanAutomation.Core.Sheets;
+using WarehousePlanAutomation.Core.Text;
 
 namespace WarehousePlanAutomation.Excel;
 
@@ -500,19 +501,35 @@ public sealed class ExcelWorkbookProcessor : IWorkbookProcessor
                 continue;
             }
 
-            ExcelSheetOperations.SetValue(planSheet, row.ExcelRow, quantityColumn, update.Quantity);
+            // Формулы не заменяются значениями: если пользователь считает какое-то из
+            // этих полей формулой, она сохраняется.
+            if (!row.FormulaColumns.Contains(SheetSchema.Plan.Quantity))
+            {
+                ExcelSheetOperations.SetValue(planSheet, row.ExcelRow, quantityColumn, update.Quantity);
+            }
 
-            if (update.Status is not null)
+            if (update.Status is not null &&
+                !row.FormulaColumns.Contains(SheetSchema.Plan.Status) &&
+                !IsAlreadyInAssembly(row.Status))
             {
                 ExcelSheetOperations.SetValue(planSheet, row.ExcelRow, statusColumn, update.Status);
             }
 
-            if (update.CompletionPercent is not null)
+            if (update.CompletionPercent is not null &&
+                !row.FormulaColumns.Contains(SheetSchema.Plan.CompletionPercent))
             {
                 ExcelSheetOperations.SetValue(planSheet, row.ExcelRow, percentColumn, update.CompletionPercent.Value);
             }
         }
     }
+
+    /// <summary>
+    /// В книге статус встречается и как «в сборке», и как «в сборке.» с точкой.
+    /// Если строка уже помечена как «в сборке», её текст не переписывается:
+    /// смысл не меняется, а привычное пользователю написание сохраняется.
+    /// </summary>
+    private static bool IsAlreadyInAssembly(string? status) =>
+        TextUtils.NormalizeKey(status).TrimEnd('.') == OrderTextRules.InAssemblyStatus;
 
     private void ApplyAggregateUpdates(
         object planSheet,

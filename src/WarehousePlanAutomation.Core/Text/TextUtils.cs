@@ -101,6 +101,66 @@ public static class TextUtils
         return false;
     }
 
+    /// <summary>
+    /// Вхождение как отдельного признака: слева граница слова, справа не буква.
+    /// Цифры справа допускаются, потому что признак может быть пронумерован.
+    /// Так «СЕТ», «СЕТ1» и «СЕТ2» находятся, а «в сети» и «кассета» - нет.
+    /// </summary>
+    public static bool ContainsToken(string? value, string normalizedNeedle)
+    {
+        if (normalizedNeedle.Length == 0)
+        {
+            return false;
+        }
+
+        var key = NormalizeKey(value);
+        var index = key.IndexOf(normalizedNeedle, StringComparison.Ordinal);
+        while (index >= 0)
+        {
+            var startsWord = index == 0 || !IsWordCharacter(key[index - 1]);
+            var endIndex = index + normalizedNeedle.Length;
+            var endsToken = endIndex >= key.Length || !char.IsLetter(key[endIndex]);
+
+            if (startsWord && endsToken)
+            {
+                return true;
+            }
+
+            index = key.IndexOf(normalizedNeedle, index + 1, StringComparison.Ordinal);
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Вхождение числа с границами по цифрам: «55575395» не должно находиться
+    /// внутри более длинного числа вроде «155575395» или «555753950».
+    /// </summary>
+    public static bool ContainsNumber(string? value, string digits)
+    {
+        if (string.IsNullOrEmpty(value) || digits.Length == 0)
+        {
+            return false;
+        }
+
+        var index = value.IndexOf(digits, StringComparison.Ordinal);
+        while (index >= 0)
+        {
+            var startsNumber = index == 0 || !char.IsDigit(value[index - 1]);
+            var endIndex = index + digits.Length;
+            var endsNumber = endIndex >= value.Length || !char.IsDigit(value[endIndex]);
+
+            if (startsNumber && endsNumber)
+            {
+                return true;
+            }
+
+            index = value.IndexOf(digits, index + 1, StringComparison.Ordinal);
+        }
+
+        return false;
+    }
+
     private static bool IsWordCharacter(char value) => char.IsLetterOrDigit(value);
 
     public static bool ContainsAnyKey(string? value, IEnumerable<string> normalizedNeedles)

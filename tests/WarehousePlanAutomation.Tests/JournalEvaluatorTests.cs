@@ -100,6 +100,40 @@ public class JournalEvaluatorTests
     }
 
     [Fact]
+    public void ПервыйПроцентНоль_ЗапущенВПервойЖеСтроке_СтатусВСборке()
+    {
+        // Строка «Запущен» с нулевым процентом означает, что заказ уже в сборке,
+        // независимо от того, первая она в журнале или нет.
+        var journal = new[]
+        {
+            Row(0, "ЗАПУЩЕН", 0),
+            Row(1, "ЗАКРЫТ", 0),
+        };
+
+        var outcome = JournalEvaluator.Evaluate(LoadNumber, journal);
+
+        Assert.True(outcome.Found);
+        Assert.True(outcome.SetInAssembly);
+        Assert.Null(outcome.PercentToSet);
+    }
+
+    [Fact]
+    public void НомерЗагрузкиНеНаходитсяВнутриБолееДлинногоЧисла()
+    {
+        // «55575395» не должно совпадать с «155575395» и «555753950»:
+        // иначе заказу достался бы статус чужого заказа.
+        var journal = new[]
+        {
+            new JournalRow(0, 2, "Подтоварка Номер загрузки 155575395", "ЗАКРЫТ", 90),
+            new JournalRow(1, 3, "Подтоварка Номер загрузки 555753950", "ЗАПУЩЕН", 0),
+        };
+
+        var outcome = JournalEvaluator.Evaluate(LoadNumber, journal);
+
+        Assert.False(outcome.Found);
+    }
+
+    [Fact]
     public void ПустойПроцентСчитаетсяНулём()
     {
         var journal = new[]

@@ -97,6 +97,25 @@ public class PlanUpdateBuilderTests
     }
 
     [Fact]
+    public void НовыйЗаказ_ПерекрОпределяетсяТолькоПоТекстуПоставок()
+    {
+        // Номер поставки стоит после слов «Номер загрузки», то есть в «Поставки» не попадает.
+        // Признак «перекр» относится к поставке, а не к служебному хвосту комментария.
+        const long newLoadNumber = 55600004;
+        var update = Build(
+            new[]
+            {
+                Order(2, "Казань-М139",
+                    "Бижутерия с хранилища Номер загрузки " + newLoadNumber + " <Подбор: 1022-015>", 10),
+            },
+            new[] { Journal(0, newLoadNumber, "ЗАПУЩЕН", 0) });
+
+        var newRow = update.NewRows.Single();
+        Assert.Equal("Бижутерия с хранилища", newRow.Supplies);
+        Assert.Equal(string.Empty, newRow.Processing);
+    }
+
+    [Fact]
     public void НовыйЗаказИзВозвратов_ПопадаетВБлокВозвраты()
     {
         const long newLoadNumber = 55600004;

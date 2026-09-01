@@ -48,8 +48,11 @@ public static class PlanUpdateBuilder
                 ? PlanSectionKind.Returns
                 : PlanSectionKind.AllGroups;
 
-            // Новая поставка: номера загрузки вчера не было, а в тексте есть номер поставки.
-            var processing = ShipmentCodeParser.ContainsCode(group.Comment)
+            // Новая поставка: номера загрузки вчера не было, а в колонке «Поставки»
+            // есть номер поставки. Проверяется именно текст «Поставки», то есть часть
+            // комментария до слов «Номер загрузки»: то, что стоит после них, к поставке
+            // отношения не имеет.
+            var processing = ShipmentCodeParser.ContainsCode(supplies)
                 ? OrderTextRules.CrossDockProcessing
                 : string.Empty;
 
@@ -121,10 +124,12 @@ public static class PlanUpdateBuilder
         PlanLayout plan,
         IReadOnlyList<TodayOrderGroup> groups)
     {
+        // Номера поставок берутся из той же части комментария, которая попадает
+        // в колонку «Поставки»: сравниваются сопоставимые тексты.
         var realCodes = new HashSet<string>(StringComparer.Ordinal);
         foreach (var group in groups)
         {
-            foreach (var code in ShipmentCodeParser.ExtractCodes(group.Comment))
+            foreach (var code in ShipmentCodeParser.ExtractCodes(LoadNumberParser.ExtractSuppliesText(group.Comment)))
             {
                 realCodes.Add(code);
             }

@@ -12,9 +12,11 @@ public static class JournalEvaluator
 {
     public static JournalOutcome Evaluate(long loadNumber, IReadOnlyList<JournalRow> journal)
     {
+        // Номер ищется с границами по цифрам: «55575395» не должен находиться внутри
+        // более длинного числа вроде «155575395», иначе заказу достался бы чужой статус.
         var key = loadNumber.ToString(CultureInfo.InvariantCulture);
         var occurrences = journal
-            .Where(row => row.Comment.Contains(key, StringComparison.Ordinal))
+            .Where(row => TextUtils.ContainsNumber(row.Comment, key))
             .OrderBy(row => row.Order)
             .ToList();
 
@@ -31,8 +33,10 @@ public static class JournalEvaluator
             return new JournalOutcome(true, true, firstPercent);
         }
 
+        // Первое вхождение тоже проверяется на «Запущен»: строка со статусом «Запущен»
+        // и нулевым процентом означает, что заказ уже в сборке, независимо от того,
+        // первая она в журнале или нет.
         var hasStarted = occurrences
-            .Skip(1)
             .Any(row => TextUtils.EqualsKey(row.Status, OrderTextRules.JournalStartedStatus));
 
         return new JournalOutcome(true, hasStarted, null);

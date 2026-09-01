@@ -107,14 +107,18 @@ public static class OrderTextRules
     public static bool IsPlaceholderComment(string? text) =>
         TextUtils.ContainsKey(text, PlaceholderCommentMarker);
 
+    /// <summary>
+    /// Признак «СЕТ» / «МОНО» ищется как отдельный признак, а не как подстрока:
+    /// «СЕТ1» и «СЕТ2» находятся, а «в сети» и «кассета» - нет.
+    /// </summary>
     public static SetMonoKind DetectSetMono(string? supplies)
     {
-        if (TextUtils.ContainsKey(supplies, SetMarker))
+        if (TextUtils.ContainsToken(supplies, SetMarker))
         {
             return SetMonoKind.Set;
         }
 
-        return TextUtils.ContainsKey(supplies, MonoMarker) ? SetMonoKind.Mono : SetMonoKind.Neutral;
+        return TextUtils.ContainsToken(supplies, MonoMarker) ? SetMonoKind.Mono : SetMonoKind.Neutral;
     }
 
     private static bool Matches(string? division, IReadOnlyList<DivisionMarker> markers)

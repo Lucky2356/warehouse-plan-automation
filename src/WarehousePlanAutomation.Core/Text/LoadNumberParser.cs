@@ -9,6 +9,9 @@ public static class LoadNumberParser
 {
     public const string Marker = "Номер загрузки";
 
+    /// <summary>Сколько разделителей допускается между словами «Номер загрузки» и самим номером.</summary>
+    private const int MaxSeparatorLength = 5;
+
     public static bool TryExtract(string? comment, out long loadNumber)
     {
         loadNumber = 0;
@@ -19,10 +22,25 @@ public static class LoadNumberParser
             return false;
         }
 
+        // Между словами «Номер загрузки» и самим номером допускаются только разделители
+        // (пробел, двоеточие, знак номера) и не более MaxSeparatorLength подряд. Иначе
+        // в комментарии вида «Номер загрузки не указан, отгрузка 05.09» номером загрузки
+        // ошибочно считалось бы первое попавшееся дальше число.
         var index = markerIndex + Marker.Length;
-        while (index < normalized.Length && !char.IsDigit(normalized[index]))
+        var limit = Math.Min(normalized.Length, index + MaxSeparatorLength);
+        while (index < limit && !char.IsDigit(normalized[index]))
         {
+            if (char.IsLetter(normalized[index]))
+            {
+                return false;
+            }
+
             index++;
+        }
+
+        if (index >= normalized.Length || !char.IsDigit(normalized[index]))
+        {
+            return false;
         }
 
         var start = index;

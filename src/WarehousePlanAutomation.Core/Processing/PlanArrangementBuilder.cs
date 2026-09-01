@@ -36,7 +36,7 @@ public static class PlanArrangementBuilder
         foreach (var kind in new[] { PlanSectionKind.AllGroups, PlanSectionKind.StorageAcceptance })
         {
             var section = plan.Section(kind);
-            if (section is null || section.DataRows.Count < 2)
+            if (section is null || section.DataRows.Count < 2 || !IsContiguous(section))
             {
                 continue;
             }
@@ -56,6 +56,15 @@ public static class PlanArrangementBuilder
 
         return new PlanArrangement(moves, numbers);
     }
+
+    /// <summary>
+    /// Строки блока идут подряд, без пустых строк внутри. Перемещения адресуют строки
+    /// по смещению от первой строки блока, поэтому разрыв внутри блока сделал бы адреса
+    /// неверными: такой блок безопаснее не сортировать вовсе.
+    /// </summary>
+    public static bool IsContiguous(PlanSection section) =>
+        section.DataRows.Count == 0 ||
+        section.DataRows[^1].ExcelRow - section.DataRows[0].ExcelRow + 1 == section.DataRows.Count;
 
     /// <summary>
     /// Строит последовательность перемещений, приводящую физический порядок строк блока

@@ -1,6 +1,7 @@
 using WarehousePlanAutomation.Core.Models;
 using WarehousePlanAutomation.Core.Processing;
 using WarehousePlanAutomation.Core.Text;
+using WarehousePlanAutomation.Tests.TestData;
 using Xunit;
 
 namespace WarehousePlanAutomation.Tests;
@@ -77,16 +78,32 @@ public class PlanPriorityTests
     }
 
     [Fact]
-    public void ПустаяДатаУходитВКонецКатегории()
+    public void ПустаяДатаОстаётсяВНачалеКатегории()
     {
+        // Строке без «Даты в сети» значение не придумывается: отправить её вниз
+        // значило бы считать её дату бесконечно поздней.
         var sorted = Sort(new[]
         {
-            Item(0, null),
-            Item(1, 46300d),
+            Item(0, 46300d),
+            Item(1, null),
         });
 
         Assert.Equal(1, sorted[0].OriginalIndex);
         Assert.Equal(0, sorted[1].OriginalIndex);
+    }
+
+    [Fact]
+    public void СтрокиБезДатыСохраняютВзаимныйПорядок()
+    {
+        var sorted = Sort(new[]
+        {
+            Item(0, 46300d),
+            Item(1, null),
+            Item(2, null),
+            Item(3, 46250d),
+        });
+
+        Assert.Equal(new[] { 1, 2, 3, 0 }, sorted.Select(i => i.OriginalIndex));
     }
 
     [Fact]
@@ -127,6 +144,24 @@ public class PlanPriorityTests
                 "1100-026 Обувь МОНО",
             },
             order);
+    }
+
+    [Fact]
+    public void БлокСПустойСтрокойВнутри_НеСортируетсяНоНумеруется()
+    {
+        // Перемещения адресуют строки по смещению от начала блока, поэтому разрыв
+        // внутри блока сделал бы адреса неверными: такой блок безопаснее не трогать.
+        var layout = PlanFixture.BuildLayoutWithGapInAllGroups();
+        var allGroups = layout.Section(PlanSectionKind.AllGroups)!;
+
+        Assert.False(PlanArrangementBuilder.IsContiguous(allGroups));
+
+        var arrangement = PlanArrangementBuilder.Build(layout);
+
+        Assert.Empty(arrangement.Moves);
+        Assert.Equal(
+            allGroups.DataRows.Select(r => r.ExcelRow),
+            arrangement.Numbers.Where(n => allGroups.DataRows.Any(r => r.ExcelRow == n.ExcelRow)).Select(n => n.ExcelRow));
     }
 
     private static PlanSection BuildSection(IReadOnlyList<(string Supplies, double? NetworkDate)> rows)

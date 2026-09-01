@@ -61,6 +61,25 @@ public class TextParsingTests
         Assert.False(LoadNumberParser.TryExtract(comment, out _));
     }
 
+    [Theory]
+    [InlineData("Подтоварка Номер загрузки не указан, отгрузка 05.09")]
+    [InlineData("Номер загрузки уточняется 55575395")]
+    public void LoadNumberParser_НеБерётДалёкоеЧислоЕслиНомераПослеМаркераНет(string comment)
+    {
+        // Между словами «Номер загрузки» и номером допускаются только разделители:
+        // иначе номером загрузки стало бы первое попавшееся дальше число.
+        Assert.False(LoadNumberParser.TryExtract(comment, out _));
+    }
+
+    [Theory]
+    [InlineData("Подтоварка Номер загрузки: 55575395", 55575395L)]
+    [InlineData("Подтоварка Номер загрузки № 55575395", 55575395L)]
+    public void LoadNumberParser_ДопускаетРазделителиПередНомером(string comment, long expected)
+    {
+        Assert.True(LoadNumberParser.TryExtract(comment, out var loadNumber));
+        Assert.Equal(expected, loadNumber);
+    }
+
     [Fact]
     public void LoadNumberParser_ВозвращаетТекстПоставокДоСловНомерЗагрузки()
     {
@@ -96,6 +115,17 @@ public class TextParsingTests
     public void OrderTextRules_ОпределяетСетИМоно(string supplies, SetMonoKind expected)
     {
         Assert.Equal(expected, OrderTextRules.DetectSetMono(supplies));
+    }
+
+    [Theory]
+    [InlineData("Обувь_дата в сети с 01.10")]
+    [InlineData("Кассета для украшений")]
+    [InlineData("Монолитная упаковка")]
+    public void OrderTextRules_НеПутаетСетИМоноСЧастямиДругихСлов(string supplies)
+    {
+        // «СЕТ» и «МОНО» ищутся как отдельные признаки, а не как подстроки:
+        // иначе «в сети» и «кассета» стали бы признаком СЕТ.
+        Assert.Equal(SetMonoKind.Neutral, OrderTextRules.DetectSetMono(supplies));
     }
 
     [Fact]
