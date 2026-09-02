@@ -18,11 +18,11 @@ public sealed record PlanSortItem(
 /// Порядок сравнения:
 /// 1) «Приемка на хранилище», затем «автозаказы для хабов» (только для блока «все группы»);
 /// 2) срочные заказы выше несрочных;
-/// 3) строки с «Номером загрузки» выше строк без него: строка без номера - это ещё
-///    не поставка, а только план на будущее, и в работе она не участвует;
-/// 4) «Дата в сети» по возрастанию (строки без даты остаются в начале категории
+/// 3) «Дата в сети» по возрастанию (строки без даты остаются в начале категории
 ///    в исходном взаимном порядке, значение им не придумывается);
-/// 5) при одинаковой дате «СЕТ» выше «МОНО»;
+/// 4) внутри одной даты: сначала «СЕТ», затем «МОНО», затем всё остальное;
+/// 5) строки с «Номером загрузки» выше строк без него: строка без номера - это ещё
+///    не поставка, а только план на будущее;
 /// 6) при полном равенстве сохраняется исходный взаимный порядок.
 /// </summary>
 public sealed class PlanPriorityComparer : IComparer<PlanSortItem>
@@ -66,12 +66,6 @@ public sealed class PlanPriorityComparer : IComparer<PlanSortItem>
             return urgencyCompare;
         }
 
-        var loadNumberCompare = LoadNumberRank(x).CompareTo(LoadNumberRank(y));
-        if (loadNumberCompare != 0)
-        {
-            return loadNumberCompare;
-        }
-
         var dateCompare = CompareDates(x.NetworkDate, y.NetworkDate);
         if (dateCompare != 0)
         {
@@ -82,6 +76,12 @@ public sealed class PlanPriorityComparer : IComparer<PlanSortItem>
         if (setMonoCompare != 0)
         {
             return setMonoCompare;
+        }
+
+        var loadNumberCompare = LoadNumberRank(x).CompareTo(LoadNumberRank(y));
+        if (loadNumberCompare != 0)
+        {
+            return loadNumberCompare;
         }
 
         return x.OriginalIndex.CompareTo(y.OriginalIndex);

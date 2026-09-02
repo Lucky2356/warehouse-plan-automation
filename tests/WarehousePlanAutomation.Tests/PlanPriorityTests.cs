@@ -108,14 +108,14 @@ public class PlanPriorityTests
     }
 
     [Fact]
-    public void СтрокаСНомеромЗагрузкиВышеСтрокиБезНомераДажеСРаннейДатой()
+    public void ПриОдинаковойДатеСтрокаСНомеромВышеСтрокиБезНомера()
     {
         // Строка без номера загрузки - это ещё не поставка, а план на будущее,
-        // поэтому она уступает место реально загруженным заказам.
+        // поэтому при прочих равных она уступает место загруженному заказу.
         var sorted = Sort(new[]
         {
-            Item(0, 46270d, hasLoadNumber: false),
-            Item(1, 46300d),
+            Item(0, 46296d, hasLoadNumber: false),
+            Item(1, 46296d),
         });
 
         Assert.Equal(1, sorted[0].OriginalIndex);
@@ -123,16 +123,32 @@ public class PlanPriorityTests
     }
 
     [Fact]
-    public void СрочностьВажнееНомераЗагрузки()
+    public void ДатаВажнееНомераЗагрузки()
     {
         var sorted = Sort(new[]
         {
-            Item(0, 46280d),
-            Item(1, 46280d, urgent: true, hasLoadNumber: false),
+            Item(0, 46310d),
+            Item(1, 46296d, hasLoadNumber: false),
         });
 
         Assert.Equal(1, sorted[0].OriginalIndex);
         Assert.Equal(0, sorted[1].OriginalIndex);
+    }
+
+    [Fact]
+    public void ВнутриОднойДаты_СетПотомМоноПотомОстальное()
+    {
+        // «1100-026, 028 Обувь СЕТ1 / СЕТ2 / МОНО», затем «1117-032 Кеды» -
+        // все четыре с одной датой «в рознице с 01.10».
+        var sorted = Sort(new[]
+        {
+            Item(0, 46296d, SetMonoKind.Neutral, hasLoadNumber: false),
+            Item(1, 46296d, SetMonoKind.Mono),
+            Item(2, 46296d, SetMonoKind.Set),
+            Item(3, 46296d, SetMonoKind.Set),
+        });
+
+        Assert.Equal(new[] { 2, 3, 1, 0 }, sorted.Select(i => i.OriginalIndex));
     }
 
     [Fact]
@@ -146,7 +162,7 @@ public class PlanPriorityTests
             Item(3, 46310d),
         });
 
-        Assert.Equal(new[] { 1, 3, 2, 0 }, sorted.Select(i => i.OriginalIndex));
+        Assert.Equal(new[] { 2, 1, 3, 0 }, sorted.Select(i => i.OriginalIndex));
     }
 
     [Fact]

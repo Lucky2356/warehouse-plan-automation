@@ -127,6 +127,13 @@ public sealed class ExcelWorkbookProcessor : IWorkbookProcessor
                 section => section.Kind,
                 section => (section.AggregateFormula, section.FirstDataRow));
 
+            // Все перестроения листа «План» идут внутри колонок таблицы, поэтому высоты
+            // строк за содержимым не следуют и восстанавливаются в конце по образцу.
+            var planColumns = new ColumnRange(
+                planLayout.Headers.Columns.Values.Min(),
+                planLayout.Headers.Columns.Values.Max());
+            var rowHeights = CaptureRowHeights(sheets.Plan, planLayout);
+
             cancellationToken.ThrowIfCancellationRequested();
             Report(progress, "Классификация заказов", 30);
             var classification = OrderClassifier.Classify(orders.Rows);
@@ -148,9 +155,9 @@ public sealed class ExcelWorkbookProcessor : IWorkbookProcessor
             // рассчитаны по той же разметке, которую видел PlanUpdateBuilder.
             ApplyPlannedMatches(sheets.Plan, planLayout, update.PlannedMatches);
 
-            ExcelSheetOperations.DeleteRows(sheets.Plan, update.PlanRowsToDelete, listSeparator);
+            ExcelSheetOperations.DeleteRows(sheets.Plan, update.PlanRowsToDelete, listSeparator, planColumns);
 
-            InsertNewRows(applicationObject, sheets.Plan, update.NewRows);
+            InsertNewRows(applicationObject, sheets.Plan, update.NewRows, planColumns);
             planLayout = ReadPlanLayout(sheets.Plan);
 
             ApplyOrderUpdates(sheets.Plan, planLayout, update.OrderUpdates);
@@ -166,7 +173,8 @@ public sealed class ExcelWorkbookProcessor : IWorkbookProcessor
             var arrangement = PlanArrangementBuilder.Build(planLayout);
             foreach (var move in arrangement.Moves)
             {
-                ExcelSheetOperations.MoveRow(applicationObject, sheets.Plan, move.FromRow, move.ToRow);
+                ExcelSheetOperations.MoveRow(
+                    applicationObject, sheets.Plan, move.FromRow, move.ToRow, planColumns);
             }
 
             var numberColumn = planLayout.Headers[SheetSchema.Plan.Number];
@@ -176,6 +184,7 @@ public sealed class ExcelWorkbookProcessor : IWorkbookProcessor
             }
 
             RepairAggregateFormulas(sheets.Plan, originalAggregates);
+            ApplyRowHeights(sheets.Plan, ReadPlanLayout(sheets.Plan), rowHeights);
 
             cancellationToken.ThrowIfCancellationRequested();
             Report(progress, "Сохранение файла", 95);
@@ -331,7 +340,69 @@ public sealed class ExcelWorkbookProcessor : IWorkbookProcessor
         return new JournalSheet(headers, rows);
     }
 
-    private void InsertNewRows(object application, object planSheet, IReadOnlyList<NewPlanRowSpec> specs)
+    /// <summary>
+    /// Высоты строк листа «План» по их роли. Перестроения идут внутри колонок таблицы,
+    /// поэтому высота остаётся за номером строки, а не за содержимым, и после всех
+    /// перемещений её нужно расставить заново.
+    /// </summary>
+    private sealed record PlanRowHeights(double? Section, double? Special, double? Data, double? Marketplace);
+
+    private static PlanRowHeights CaptureRowHeights(object planSheet, PlanLayout layout)
+    {
+        double? Height(int? row) => row is null ? null : ExcelSheetOperations.GetRowHeight(planSheet, row.Value);
+
+        var firstSection = layout.Sections.Count > 0 ? layout.Sections[0].HeaderRow : (int?)null;
+        var firstOrderRow = layout.OrderSections
+            .SelectMany(s => s.DataRows)
+            .FirstOrDefault(r => r.IsOrderRow)?.ExcelRow;
+        var firstMarketplaceRow = layout.Section(PlanSectionKind.Marketplaces)?.DataRows.FirstOrDefault()?.ExcelRow;
+
+        return new PlanRowHeights(
+            Height(firstSection),
+            Height(layout.StorageAcceptanceRow?.ExcelRow),
+            Height(firstOrderRow),
+            Height(firstMarketplaceRow));
+    }
+
+    private void ApplyRowHeights(object planSheet, PlanLayout layout, PlanRowHeights heights)
+    {
+        void Set(int row, double? height)
+        {
+            if (height is > 0d)
+            {
+                ExcelSheetOperations.SetRowHeight(planSheet, row, height.Value);
+            }
+        }
+
+        foreach (var section in layout.Sections)
+        {
+            Set(section.HeaderRow, heights.Section);
+
+            foreach (var row in section.DataRows)
+            {
+                if (section.Kind == PlanSectionKind.Marketplaces)
+                {
+                    Set(row.ExcelRow, heights.Marketplace);
+                }
+                else if (!row.IsOrderRow)
+                {
+                    Set(row.ExcelRow, heights.Special);
+                }
+                else
+                {
+                    Set(row.ExcelRow, heights.Data);
+                }
+            }
+        }
+
+        _logger.Debug("Высоты строк листа «План» восстановлены по образцу.");
+    }
+
+    private void InsertNewRows(
+        object application,
+        object planSheet,
+        IReadOnlyList<NewPlanRowSpec> specs,
+        ColumnRange columns)
     {
         foreach (var spec in specs)
         {
@@ -353,7 +424,8 @@ public sealed class ExcelWorkbookProcessor : IWorkbookProcessor
             }
 
             var insertBefore = section.DataRows.Count > 0 ? section.LastDataRow : section.HeaderRow + 1;
-            ExcelSheetOperations.InsertCopiedRow(application, planSheet, template.ExcelRow, insertBefore);
+            ExcelSheetOperations.InsertCopiedRow(
+                application, planSheet, template.ExcelRow, insertBefore, columns);
             FillNewRow(planSheet, layout.Headers, insertBefore, spec);
             _logger.Debug("Добавлена строка заказа " + spec.LoadNumber + " в строку " + insertBefore + ".");
         }

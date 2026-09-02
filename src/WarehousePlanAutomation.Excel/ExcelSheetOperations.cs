@@ -271,7 +271,16 @@ internal static class ExcelSheetOperations
     /// (Excel ограничивает его 255 символами). На больших выгрузках это примерно вдвое быстрее,
     /// чем удаление каждого блока по отдельности.
     /// </summary>
-    public static int DeleteRows(object sheetObject, IEnumerable<int> rows, string listSeparator)
+    /// <summary>
+    /// Удаляет строки. Если задан диапазон колонок, удаляется только прямоугольник внутри
+    /// него со сдвигом вверх: на листе «План» иначе уехала бы боковая сводка справа
+    /// от таблицы, а строка сводки, попавшая под удаление, пропала бы совсем.
+    /// </summary>
+    public static int DeleteRows(
+        object sheetObject,
+        IEnumerable<int> rows,
+        string listSeparator,
+        ColumnRange? columns = null)
     {
         dynamic sheet = sheetObject;
         var ordered = rows.Distinct().OrderBy(r => r).ToList();
@@ -291,7 +300,10 @@ internal static class ExcelSheetOperations
 
             while (index >= 0)
             {
-                var part = RowReference(blocks[index].Start, blocks[index].End);
+                var part = columns is null
+                    ? RowReference(blocks[index].Start, blocks[index].End)
+                    : BlockReference(blocks[index].Start, blocks[index].End, columns.Value);
+
                 if (parts.Count > 0 && length + listSeparator.Length + part.Length > addressBudget)
                 {
                     break;
@@ -304,7 +316,15 @@ internal static class ExcelSheetOperations
 
             using var scope = new ComScope();
             dynamic range = scope.Track(sheet.Range[string.Join(listSeparator, parts)]);
-            range.Delete();
+
+            if (columns is null)
+            {
+                range.Delete();
+            }
+            else
+            {
+                range.Delete(ExcelConstants.XlUp);
+            }
         }
 
         return ordered.Count;
@@ -338,33 +358,57 @@ internal static class ExcelSheetOperations
         object applicationObject,
         object sheetObject,
         int templateRow,
-        int insertBeforeRow)
+        int insertBeforeRow,
+        ColumnRange columns)
     {
         dynamic application = applicationObject;
         dynamic sheet = sheetObject;
 
         using (var scope = new ComScope())
         {
-            dynamic source = scope.Track(sheet.Range[RowReference(templateRow, templateRow)]);
+            dynamic source = scope.Track(sheet.Range[BlockReference(templateRow, templateRow, columns)]);
             source.Copy();
-            dynamic destination = scope.Track(sheet.Range[RowReference(insertBeforeRow, insertBeforeRow)]);
+            dynamic destination = scope.Track(sheet.Range[BlockReference(insertBeforeRow, insertBeforeRow, columns)]);
             destination.Insert(ExcelConstants.XlDown);
         }
 
         application.CutCopyMode = false;
     }
 
+    public static double GetRowHeight(object sheetObject, int row)
+    {
+        dynamic sheet = sheetObject;
+        using var scope = new ComScope();
+        dynamic rows = scope.Track(sheet.Rows);
+        dynamic target = scope.Track(rows[row]);
+        return Convert.ToDouble(target.RowHeight, CultureInfo.InvariantCulture);
+    }
+
+    public static void SetRowHeight(object sheetObject, int row, double height)
+    {
+        dynamic sheet = sheetObject;
+        using var scope = new ComScope();
+        dynamic rows = scope.Track(sheet.Rows);
+        dynamic target = scope.Track(rows[row]);
+        target.RowHeight = height;
+    }
+
     /// <summary>Переносит строку целиком: вырезает и вставляет перед целевой строкой.</summary>
-    public static void MoveRow(object applicationObject, object sheetObject, int fromRow, int toRow)
+    public static void MoveRow(
+        object applicationObject,
+        object sheetObject,
+        int fromRow,
+        int toRow,
+        ColumnRange columns)
     {
         dynamic application = applicationObject;
         dynamic sheet = sheetObject;
 
         using (var scope = new ComScope())
         {
-            dynamic source = scope.Track(sheet.Range[RowReference(fromRow, fromRow)]);
+            dynamic source = scope.Track(sheet.Range[BlockReference(fromRow, fromRow, columns)]);
             source.Cut();
-            dynamic destination = scope.Track(sheet.Range[RowReference(toRow, toRow)]);
+            dynamic destination = scope.Track(sheet.Range[BlockReference(toRow, toRow, columns)]);
             destination.Insert(ExcelConstants.XlDown);
         }
 
@@ -373,6 +417,15 @@ internal static class ExcelSheetOperations
 
     private static string RowReference(int start, int end) =>
         start.ToString(CultureInfo.InvariantCulture) + ":" + end.ToString(CultureInfo.InvariantCulture);
+
+    /// <summary>
+    /// Прямоугольник из строк, ограниченный колонками таблицы. Вставка, удаление и перенос
+    /// строк выполняются именно так: если двигать строку целиком, вместе с ней уезжает всё,
+    /// что стоит справа от таблицы - например, боковая сводка «норма в день / в план».
+    /// </summary>
+    private static string BlockReference(int startRow, int endRow, ColumnRange columns) =>
+        ExcelColumn.ToLetters(columns.First) + startRow.ToString(CultureInfo.InvariantCulture) + ":" +
+        ExcelColumn.ToLetters(columns.Last) + endRow.ToString(CultureInfo.InvariantCulture);
 
     private static string BuildRangeReference(int row, int firstColumn, int lastColumn) =>
         ExcelColumn.ToLetters(firstColumn) + row.ToString(CultureInfo.InvariantCulture) + ":" +

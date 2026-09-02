@@ -1,11 +1,14 @@
 namespace WarehousePlanAutomation.Core.Text;
 
-/// <summary>Признак «СЕТ» / «МОНО» в колонке «Поставки».</summary>
+/// <summary>
+/// Признак «СЕТ» / «МОНО» в колонке «Поставки». Значения задают порядок сортировки
+/// внутри одной даты: сначала СЕТ, затем МОНО, затем всё остальное.
+/// </summary>
 public enum SetMonoKind
 {
     Set = 0,
-    Neutral = 1,
-    Mono = 2,
+    Mono = 1,
+    Neutral = 2,
 }
 
 /// <summary>Способ сопоставления названия подразделения с признаком.</summary>
