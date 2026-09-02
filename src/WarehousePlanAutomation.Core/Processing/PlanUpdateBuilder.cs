@@ -21,21 +21,39 @@ public static class PlanUpdateBuilder
 
         var todayGroups = orders.Groups.ToDictionary(g => g.LoadNumber);
 
-        var newRows = BuildNewRows(plan, orders.Groups, yesterdayLoadNumbers);
-        var orderUpdates = BuildOrderUpdates(plan, todayGroups, newRows, journal);
-        var rowsToDelete = BuildPlaceholderDeletions(plan, orders.Groups);
+        var (newRows, plannedMatches) = BuildNewRows(plan, orders.Groups, yesterdayLoadNumbers);
+        var orderUpdates = BuildOrderUpdates(plan, todayGroups, newRows, plannedMatches, journal);
+        var rowsToDelete = BuildPlaceholderDeletions(plan, orders.Groups, plannedMatches);
         var aggregates = BuildAggregates(orders, plan, today);
 
-        return new PlanStructuralUpdate(rowsToDelete, newRows, orderUpdates, aggregates);
+        return new PlanStructuralUpdate(rowsToDelete, newRows, orderUpdates, aggregates, plannedMatches);
     }
 
-    private static IReadOnlyList<NewPlanRowSpec> BuildNewRows(
+    private static (IReadOnlyList<NewPlanRowSpec> NewRows, IReadOnlyList<PlannedRowMatch> Matches) BuildNewRows(
         PlanLayout plan,
         IReadOnlyList<TodayOrderGroup> groups,
         HashSet<long> yesterdayLoadNumbers)
     {
-        _ = plan;
+        // Строки «Плана», заведённые заранее: поставка запланирована, но номера загрузки
+        // у неё ещё нет. Ключ - текст «Поставки», по нему заказ и узнаётся, когда приходит.
+        var plannedRows = new Dictionary<string, PlanRow>(StringComparer.Ordinal);
+        foreach (var row in plan.OrderSections.SelectMany(s => s.DataRows))
+        {
+            if (!row.IsOrderRow || row.LoadNumber.HasValue || row.Supplies.Length == 0)
+            {
+                continue;
+            }
+
+            var key = TextUtils.NormalizeKey(row.Supplies);
+            if (key.Length > 0)
+            {
+                plannedRows.TryAdd(key, row);
+            }
+        }
+
         var result = new List<NewPlanRowSpec>();
+        var matches = new List<PlannedRowMatch>();
+
         foreach (var group in groups)
         {
             if (yesterdayLoadNumbers.Contains(group.LoadNumber))
@@ -44,9 +62,6 @@ public static class PlanUpdateBuilder
             }
 
             var supplies = LoadNumberParser.ExtractSuppliesText(group.Comment);
-            var section = OrderTextRules.IsReturn(group.Comment)
-                ? PlanSectionKind.Returns
-                : PlanSectionKind.AllGroups;
 
             // Новая поставка: номера загрузки вчера не было, а в колонке «Поставки»
             // есть номер поставки. Проверяется именно текст «Поставки», то есть часть
@@ -55,6 +70,19 @@ public static class PlanUpdateBuilder
             var processing = ShipmentCodeParser.ContainsCode(supplies)
                 ? OrderTextRules.CrossDockProcessing
                 : string.Empty;
+
+            // Заказ мог быть запланирован заранее отдельной строкой без номера загрузки.
+            // Тогда номер вписывается в неё, а не заводится вторая такая же строка.
+            var plannedKey = TextUtils.NormalizeKey(supplies);
+            if (plannedKey.Length > 0 && plannedRows.Remove(plannedKey, out var plannedRow))
+            {
+                matches.Add(new PlannedRowMatch(plannedRow.ExcelRow, group.LoadNumber, processing));
+                continue;
+            }
+
+            var section = OrderTextRules.IsReturn(group.Comment)
+                ? PlanSectionKind.Returns
+                : PlanSectionKind.AllGroups;
 
             result.Add(new NewPlanRowSpec(
                 section,
@@ -65,7 +93,7 @@ public static class PlanUpdateBuilder
                 group.LoadNumber));
         }
 
-        return result;
+        return (result, matches);
     }
 
     /// <summary>
@@ -79,6 +107,7 @@ public static class PlanUpdateBuilder
         PlanLayout plan,
         IReadOnlyDictionary<long, TodayOrderGroup> todayGroups,
         IReadOnlyList<NewPlanRowSpec> newRows,
+        IReadOnlyList<PlannedRowMatch> plannedMatches,
         IReadOnlyList<JournalRow> journal)
     {
         var loadNumbers = new List<long>();
@@ -100,21 +129,31 @@ public static class PlanUpdateBuilder
             }
         }
 
+        foreach (var match in plannedMatches)
+        {
+            if (seen.Add(match.LoadNumber))
+            {
+                loadNumbers.Add(match.LoadNumber);
+            }
+        }
+
         var updates = new List<OrderRowUpdate>(loadNumbers.Count);
         foreach (var loadNumber in loadNumbers)
         {
-            // Заказ, которого сегодня нет среди обычных заказов, обнуляется по количеству.
-            var quantity = todayGroups.TryGetValue(loadNumber, out var group) ? group.Quantity : 0d;
+            // Заказ, которого сегодня нет среди обычных заказов, обнуляется по количеству
+            // и помечается: строку нужно разобрать вручную.
+            var inOrders = todayGroups.TryGetValue(loadNumber, out var group);
+            var quantity = inOrders ? group!.Quantity : 0d;
 
             var outcome = JournalEvaluator.Evaluate(loadNumber, journal);
             if (!outcome.Found)
             {
-                updates.Add(new OrderRowUpdate(loadNumber, 0d, null, null));
+                updates.Add(new OrderRowUpdate(loadNumber, 0d, null, null, !inOrders));
                 continue;
             }
 
             var status = outcome.SetInAssembly ? OrderTextRules.InAssemblyStatus : null;
-            updates.Add(new OrderRowUpdate(loadNumber, quantity, status, outcome.PercentToSet));
+            updates.Add(new OrderRowUpdate(loadNumber, quantity, status, outcome.PercentToSet, !inOrders));
         }
 
         return updates;
@@ -122,7 +161,8 @@ public static class PlanUpdateBuilder
 
     private static IReadOnlyList<int> BuildPlaceholderDeletions(
         PlanLayout plan,
-        IReadOnlyList<TodayOrderGroup> groups)
+        IReadOnlyList<TodayOrderGroup> groups,
+        IReadOnlyList<PlannedRowMatch> plannedMatches)
     {
         // Номера поставок берутся из той же части комментария, которая попадает
         // в колонку «Поставки»: сравниваются сопоставимые тексты.
@@ -140,10 +180,15 @@ public static class PlanUpdateBuilder
             return Array.Empty<int>();
         }
 
+        // Строку, в которую только что подставили номер загрузки, удалять нельзя:
+        // заказ туда переехал, а не пришёл отдельной строкой.
+        var matched = new HashSet<int>(plannedMatches.Select(m => m.ExcelRow));
+
         var rows = new List<int>();
         foreach (var row in plan.OrderSections.SelectMany(s => s.DataRows))
         {
-            if (!row.IsOrderRow || !OrderTextRules.IsPlaceholderComment(row.Comments))
+            if (!row.IsOrderRow || matched.Contains(row.ExcelRow) ||
+                !OrderTextRules.IsPlaceholderComment(row.Comments))
             {
                 continue;
             }

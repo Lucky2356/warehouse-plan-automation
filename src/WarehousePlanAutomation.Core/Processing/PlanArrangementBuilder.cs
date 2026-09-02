@@ -83,7 +83,8 @@ public static class PlanArrangementBuilder
                 row.IsAutoHubRow,
                 OrderTextRules.IsUrgent(row.Supplies),
                 row.NetworkDate,
-                OrderTextRules.DetectSetMono(row.Supplies)));
+                OrderTextRules.DetectSetMono(row.Supplies),
+                row.LoadNumber.HasValue));
         }
 
         var desired = items.ToList();

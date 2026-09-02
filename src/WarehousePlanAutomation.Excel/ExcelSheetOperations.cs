@@ -172,6 +172,37 @@ internal static class ExcelSheetOperations
         cell.ClearContents();
     }
 
+    /// <summary>
+    /// Розовая заливка ячейки - стандартный цвет Excel «Плохо» (RGB 255 199 206).
+    /// В COM цвет задаётся в порядке BGR, отсюда 0xCEC7FF.
+    /// </summary>
+    private const int WarningFill = 0xCEC7FF;
+
+    /// <summary>
+    /// Помечает или снимает пометку с ячейки. Снимается заливка только своя:
+    /// если аналитик покрасила ячейку сама, её цвет сохраняется.
+    /// </summary>
+    public static void SetWarningFill(object sheetObject, int row, int column, bool highlight)
+    {
+        dynamic sheet = sheetObject;
+        using var scope = new ComScope();
+        dynamic cells = scope.Track(sheet.Cells);
+        dynamic cell = scope.Track(cells[row, column]);
+        dynamic interior = scope.Track(cell.Interior);
+
+        if (highlight)
+        {
+            interior.Color = WarningFill;
+            return;
+        }
+
+        object? current = interior.Color;
+        if (current is not null && Convert.ToInt32(current, CultureInfo.InvariantCulture) == WarningFill)
+        {
+            interior.ColorIndex = ExcelConstants.XlColorIndexNone;
+        }
+    }
+
     public static void SetFormula(object sheetObject, int row, int column, string formula)
     {
         dynamic sheet = sheetObject;

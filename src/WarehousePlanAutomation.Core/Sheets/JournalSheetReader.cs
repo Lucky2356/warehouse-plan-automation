@@ -31,6 +31,9 @@ public static class JournalSheetReader
         var commentColumn = headers[SheetSchema.Journal.Comment];
         var statusColumn = headers[SheetSchema.Journal.Status];
         var percentColumn = headers[SheetSchema.Journal.Percent];
+        var documentColumn = headers[SheetSchema.Journal.DocumentNumber];
+        var quantityColumn = headers[SheetSchema.Journal.Quantity];
+        var actualColumn = headers[SheetSchema.Journal.ActualQuantity];
 
         var firstRow = Math.Max(grid.FirstRow, headers.HeaderRow + 1);
         for (var row = firstRow; row <= grid.LastRow; row++)
@@ -44,7 +47,15 @@ public static class JournalSheetReader
                 continue;
             }
 
-            destination.Add(new JournalRow(order++, row, comment, status, percent));
+            destination.Add(new JournalRow(
+                order++,
+                row,
+                comment,
+                status,
+                percent,
+                TextUtils.Normalize(grid.Text(row, documentColumn)),
+                grid.Number(row, quantityColumn),
+                grid.Number(row, actualColumn)));
         }
     }
 

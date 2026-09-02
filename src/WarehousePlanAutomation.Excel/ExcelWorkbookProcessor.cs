@@ -143,6 +143,11 @@ public sealed class ExcelWorkbookProcessor : IWorkbookProcessor
 
             cancellationToken.ThrowIfCancellationRequested();
             Report(progress, "Обновление листа «План»", 60);
+
+            // Подстановка номеров выполняется до удаления и вставки строк: адреса строк
+            // рассчитаны по той же разметке, которую видел PlanUpdateBuilder.
+            ApplyPlannedMatches(sheets.Plan, planLayout, update.PlannedMatches);
+
             ExcelSheetOperations.DeleteRows(sheets.Plan, update.PlanRowsToDelete, listSeparator);
 
             InsertNewRows(applicationObject, sheets.Plan, update.NewRows);
@@ -466,6 +471,48 @@ public sealed class ExcelWorkbookProcessor : IWorkbookProcessor
         }
     }
 
+    /// <summary>
+    /// Вписывает номер загрузки в строку, заведённую заранее без него. Аналитик планирует
+    /// будущую поставку отдельной строкой, и когда заказ приходит - дополняет её,
+    /// а не заводит вторую такую же.
+    ///
+    /// Трогаются только те поля, которые меняет и она: номер загрузки и комментарий.
+    /// «Обработка» проставляется, лишь если у поставки есть номер и ячейка пустая:
+    /// значение, выставленное вручную, не затирается. Количество, статус и процент
+    /// проставит обычное обновление заказов - строку оно найдёт уже по номеру.
+    /// </summary>
+    private void ApplyPlannedMatches(
+        object planSheet,
+        PlanLayout layout,
+        IReadOnlyList<PlannedRowMatch> matches)
+    {
+        if (matches.Count == 0)
+        {
+            return;
+        }
+
+        var loadNumberColumn = layout.Headers[SheetSchema.Plan.LoadNumber];
+        var commentsColumn = layout.Headers[SheetSchema.Plan.Comments];
+        var processingColumn = layout.Headers[SheetSchema.Plan.Processing];
+        var byRow = layout.AllDataRows.ToDictionary(row => row.ExcelRow);
+
+        foreach (var match in matches)
+        {
+            ExcelSheetOperations.SetValue(planSheet, match.ExcelRow, loadNumberColumn, (double)match.LoadNumber);
+            ExcelSheetOperations.SetValue(planSheet, match.ExcelRow, commentsColumn, OrderTextRules.LoadedComment);
+
+            if (match.Processing.Length > 0 &&
+                byRow.TryGetValue(match.ExcelRow, out var row) &&
+                row.Processing.Length == 0)
+            {
+                ExcelSheetOperations.SetValue(planSheet, match.ExcelRow, processingColumn, match.Processing);
+            }
+
+            _logger.Information(
+                "Заказ " + match.LoadNumber + " вписан в запланированную строку " + match.ExcelRow + ".");
+        }
+    }
+
     private static void ApplyOrderUpdates(
         object planSheet,
         PlanLayout layout,
@@ -485,6 +532,7 @@ public sealed class ExcelWorkbookProcessor : IWorkbookProcessor
         var quantityColumn = layout.Headers[SheetSchema.Plan.Quantity];
         var statusColumn = layout.Headers[SheetSchema.Plan.Status];
         var percentColumn = layout.Headers[SheetSchema.Plan.CompletionPercent];
+        var loadNumberColumn = layout.Headers[SheetSchema.Plan.LoadNumber];
 
         foreach (var row in layout.OrderSections.SelectMany(section => section.DataRows))
         {
@@ -497,6 +545,11 @@ public sealed class ExcelWorkbookProcessor : IWorkbookProcessor
             {
                 continue;
             }
+
+            // Заказ пропал из сегодняшней выгрузки: количество обнулено, и номер
+            // подсвечивается, чтобы строку было видно и можно было убрать вручную.
+            ExcelSheetOperations.SetWarningFill(
+                planSheet, row.ExcelRow, loadNumberColumn, update.MissingFromOrders);
 
             // Формулы не заменяются значениями: если пользователь считает какое-то из
             // этих полей формулой, она сохраняется.

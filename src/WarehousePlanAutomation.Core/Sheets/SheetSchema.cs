@@ -32,11 +32,23 @@ public static class SheetSchema
         public const string Status = "Статус";
         public const string Percent = "%";
 
+        /// <summary>Номер документа магазина, например «З000-260355». Задаёт единицу подсчёта.</summary>
+        public const string DocumentNumber = "Номер";
+
+        /// <summary>Сколько единиц заказано по документу.</summary>
+        public const string Quantity = "Кол-во ед";
+
+        /// <summary>Сколько единиц собрано фактически.</summary>
+        public const string ActualQuantity = "Факт ед";
+
         public static readonly IReadOnlyList<ColumnSpec> Specs = new[]
         {
             new ColumnSpec(Comment, new[] { "комментарий", "комментарии" }),
             new ColumnSpec(Status, new[] { "статус" }),
             new ColumnSpec(Percent, new[] { "%" }, exactOnly: true),
+            new ColumnSpec(DocumentNumber, new[] { "номер" }, exactOnly: true),
+            new ColumnSpec(Quantity, new[] { "кол-во ед" }, exactOnly: true),
+            new ColumnSpec(ActualQuantity, new[] { "факт ед" }, exactOnly: true),
         };
     }
 

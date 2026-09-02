@@ -63,12 +63,15 @@ public class SheetReaderTests
     {
         var rows = new List<object?[]>
         {
-            new object?[] { "Направление", "Статус", "Комментарий", "%" },
+            new object?[] { "Направление", "Статус", "Комментарий", "Номер", "Кол-во ед", "Факт ед", "%" },
         };
 
         for (var i = 0; i < 5; i++)
         {
-            rows.Add(new object?[] { "Магазины M", "ЗАПУЩЕН", "Номер загрузки 5557539" + i, (double)i });
+            rows.Add(new object?[]
+            {
+                "Магазины M", "ЗАПУЩЕН", "Номер загрузки 5557539" + i, "З000-26035" + i, 100d, (double)i, (double)i,
+            });
         }
 
         var sheet = JournalSheetReader.Read(SheetGrid.FromRows(1, 1, rows));

@@ -1,3 +1,4 @@
+using System.Globalization;
 using WarehousePlanAutomation.Core.Models;
 using WarehousePlanAutomation.Core.Processing;
 using WarehousePlanAutomation.Core.Text;
@@ -14,8 +15,25 @@ public class PlanUpdateBuilderTests
     private static OrderRow Order(int excelRow, string division, string comment, double difference) =>
         new(excelRow, division, comment, difference, 46262.7d);
 
-    private static JournalRow Journal(int order, long loadNumber, string status, double? percent) =>
-        new(order, order + 2, "Заказ Номер загрузки " + loadNumber, status, percent);
+    /// <summary>
+    /// Строка журнала. Процент считается по «Кол-во ед» и «Факт ед», поэтому именно они
+    /// задаются здесь, а не готовое значение колонки «%».
+    /// </summary>
+    private static JournalRow Journal(
+        int order,
+        long loadNumber,
+        string status,
+        double planned = 100d,
+        double actual = 0d) =>
+        new(
+            order,
+            order + 2,
+            "Заказ Номер загрузки " + loadNumber,
+            status,
+            null,
+            "З000-" + order.ToString(CultureInfo.InvariantCulture),
+            planned,
+            actual);
 
     private static PlanStructuralUpdate Build(
         IReadOnlyList<OrderRow> orders,
@@ -38,7 +56,7 @@ public class PlanUpdateBuilderTests
                 Order(3, "Иркутск-М47",
                     "Срочная подтоварка 28.08_Хранение Номер загрузки " + PlanFixture.ExistingUrgentLoadNumber, 100),
             },
-            new[] { Journal(0, PlanFixture.ExistingUrgentLoadNumber, "ЗАКРЫТ", 83) });
+            new[] { Journal(0, PlanFixture.ExistingUrgentLoadNumber, "ЗАКРЫТ", 100d, 83d) });
 
         Assert.Empty(update.NewRows);
 
@@ -58,7 +76,7 @@ public class PlanUpdateBuilderTests
                 Order(2, "Москва-M149",
                     "1022-015 Пуховики_получение в рознице 20.09 Номер загрузки " + newLoadNumber + " <Подбор:>", 251),
             },
-            new[] { Journal(0, newLoadNumber, "ЗАПУЩЕН", 0) });
+            new[] { Journal(0, newLoadNumber, "ЗАПУЩЕН") });
 
         var newRow = Assert.Single(update.NewRows);
         Assert.Equal(PlanSectionKind.AllGroups, newRow.Section);
@@ -77,7 +95,7 @@ public class PlanUpdateBuilderTests
             {
                 Order(2, "Казань-М139", "МЗ806-133 ШПП_отгрузка по готовности Номер загрузки " + newLoadNumber, 10),
             },
-            new[] { Journal(0, newLoadNumber, "ЗАПУЩЕН", 0) });
+            new[] { Journal(0, newLoadNumber, "ЗАПУЩЕН") });
 
         Assert.Equal(OrderTextRules.CrossDockProcessing, update.NewRows.Single().Processing);
     }
@@ -91,7 +109,7 @@ public class PlanUpdateBuilderTests
             {
                 Order(2, "Казань-М139", "Бижутерия с хранилища_срочная отгрузка Номер загрузки " + newLoadNumber, 10),
             },
-            new[] { Journal(0, newLoadNumber, "ЗАПУЩЕН", 0) });
+            new[] { Journal(0, newLoadNumber, "ЗАПУЩЕН") });
 
         Assert.Equal(string.Empty, update.NewRows.Single().Processing);
     }
@@ -108,7 +126,7 @@ public class PlanUpdateBuilderTests
                 Order(2, "Казань-М139",
                     "Бижутерия с хранилища Номер загрузки " + newLoadNumber + " <Подбор: 1022-015>", 10),
             },
-            new[] { Journal(0, newLoadNumber, "ЗАПУЩЕН", 0) });
+            new[] { Journal(0, newLoadNumber, "ЗАПУЩЕН") });
 
         var newRow = update.NewRows.Single();
         Assert.Equal("Бижутерия с хранилища", newRow.Supplies);
@@ -125,7 +143,7 @@ public class PlanUpdateBuilderTests
                 Order(2, "Казань-М139",
                     "Пуховики ликвиды_из возвратов, времянки Номер загрузки " + newLoadNumber, 86),
             },
-            new[] { Journal(0, newLoadNumber, "ЗАПУЩЕН", 0) });
+            new[] { Journal(0, newLoadNumber, "ЗАПУЩЕН") });
 
         Assert.Equal(PlanSectionKind.Returns, update.NewRows.Single().Section);
     }
@@ -135,7 +153,7 @@ public class PlanUpdateBuilderTests
     {
         var update = Build(
             Array.Empty<OrderRow>(),
-            new[] { Journal(0, PlanFixture.ExistingSetLoadNumber, "ЗАКРЫТ", 55) });
+            new[] { Journal(0, PlanFixture.ExistingSetLoadNumber, "ЗАКРЫТ", 100d, 55d) });
 
         var order = update.OrderUpdates.Single(u => u.LoadNumber == PlanFixture.ExistingSetLoadNumber);
         Assert.Equal(0d, order.Quantity);
@@ -159,17 +177,62 @@ public class PlanUpdateBuilderTests
     }
 
     [Fact]
-    public void СтрокаЗаказыБудутЗагружены_УдаляетсяПриПоявленииТойЖеПоставки()
+    public void СтрокаЗаказыБудутЗагружены_УдаляетсяПриПоявленииТойЖеПоставкиПодДругимНазванием()
     {
+        // Заказ пришёл под своим названием, а заготовка называлась иначе: та же поставка
+        // теперь представлена новой строкой, и заготовка не нужна.
         const long newLoadNumber = 55600005;
         var update = Build(
             new[]
             {
-                Order(2, "Казань-М139", "1079-051 Шапки_отгрузка по готовности Номер загрузки " + newLoadNumber, 2000),
+                Order(2, "Казань-М139", "1079-051 Шапки СЕТ1_в рознице с 10.09 Номер загрузки " + newLoadNumber, 2000),
             },
-            new[] { Journal(0, newLoadNumber, "ЗАПУЩЕН", 0) });
+            new[] { Journal(0, newLoadNumber, "ЗАПУЩЕН") });
 
         Assert.Equal(new[] { 8 }, update.PlanRowsToDelete);
+        Assert.Single(update.NewRows);
+        Assert.Empty(update.PlannedMatches);
+    }
+
+    [Fact]
+    public void ЗапланированнаяСтрока_ПолучаетНомерЗагрузкиВместоВторойСтроки()
+    {
+        // Аналитик заводит будущую поставку строкой без номера загрузки. Когда заказ
+        // приходит с тем же текстом, номер вписывается в неё, а не создаётся дубль:
+        // иначе итог блока завышается ровно на количество этого заказа.
+        const long newLoadNumber = 55600007;
+        var update = Build(
+            new[]
+            {
+                Order(2, "Казань-М139",
+                    PlanFixture.PlaceholderSupplies + " Номер загрузки " + newLoadNumber, 2000),
+            },
+            new[] { Journal(0, newLoadNumber, "ЗАПУЩЕН") });
+
+        var match = Assert.Single(update.PlannedMatches);
+        Assert.Equal(8, match.ExcelRow);
+        Assert.Equal(newLoadNumber, match.LoadNumber);
+
+        Assert.Empty(update.NewRows);
+        Assert.Empty(update.PlanRowsToDelete);
+
+        var order = update.OrderUpdates.Single(u => u.LoadNumber == newLoadNumber);
+        Assert.Equal(2000d, order.Quantity);
+    }
+
+    [Fact]
+    public void ЗапланированнаяСтрока_НеПодставляетсяПриДругомТексте()
+    {
+        const long newLoadNumber = 55600008;
+        var update = Build(
+            new[]
+            {
+                Order(2, "Казань-М139", "1079-051 Шапки_отгрузка Номер загрузки " + newLoadNumber, 2000),
+            },
+            new[] { Journal(0, newLoadNumber, "ЗАПУЩЕН") });
+
+        Assert.Empty(update.PlannedMatches);
+        Assert.Single(update.NewRows);
     }
 
     [Fact]
@@ -181,7 +244,7 @@ public class PlanUpdateBuilderTests
             {
                 Order(2, "Казань-М139", "1244-001 ШПП_отгрузка по готовности Номер загрузки " + newLoadNumber, 100),
             },
-            new[] { Journal(0, newLoadNumber, "ЗАПУЩЕН", 0) });
+            new[] { Journal(0, newLoadNumber, "ЗАПУЩЕН") });
 
         Assert.Empty(update.PlanRowsToDelete);
     }

@@ -14,8 +14,9 @@ public class PlanPriorityTests
         SetMonoKind kind = SetMonoKind.Neutral,
         bool urgent = false,
         bool acceptance = false,
-        bool autoHub = false) =>
-        new(index, acceptance, autoHub, urgent, networkDate, kind);
+        bool autoHub = false,
+        bool hasLoadNumber = true) =>
+        new(index, acceptance, autoHub, urgent, networkDate, kind, hasLoadNumber);
 
     private static List<PlanSortItem> Sort(IEnumerable<PlanSortItem> items, bool honorSpecialRows = true)
     {
@@ -104,6 +105,48 @@ public class PlanPriorityTests
         });
 
         Assert.Equal(new[] { 1, 2, 3, 0 }, sorted.Select(i => i.OriginalIndex));
+    }
+
+    [Fact]
+    public void СтрокаСНомеромЗагрузкиВышеСтрокиБезНомераДажеСРаннейДатой()
+    {
+        // Строка без номера загрузки - это ещё не поставка, а план на будущее,
+        // поэтому она уступает место реально загруженным заказам.
+        var sorted = Sort(new[]
+        {
+            Item(0, 46270d, hasLoadNumber: false),
+            Item(1, 46300d),
+        });
+
+        Assert.Equal(1, sorted[0].OriginalIndex);
+        Assert.Equal(0, sorted[1].OriginalIndex);
+    }
+
+    [Fact]
+    public void СрочностьВажнееНомераЗагрузки()
+    {
+        var sorted = Sort(new[]
+        {
+            Item(0, 46280d),
+            Item(1, 46280d, urgent: true, hasLoadNumber: false),
+        });
+
+        Assert.Equal(1, sorted[0].OriginalIndex);
+        Assert.Equal(0, sorted[1].OriginalIndex);
+    }
+
+    [Fact]
+    public void СтрокиБезНомераСохраняютПорядокПоДате()
+    {
+        var sorted = Sort(new[]
+        {
+            Item(0, 46310d, hasLoadNumber: false),
+            Item(1, 46296d),
+            Item(2, 46280d, hasLoadNumber: false),
+            Item(3, 46310d),
+        });
+
+        Assert.Equal(new[] { 1, 3, 2, 0 }, sorted.Select(i => i.OriginalIndex));
     }
 
     [Fact]
