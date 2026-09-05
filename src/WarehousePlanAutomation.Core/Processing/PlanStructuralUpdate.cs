@@ -34,14 +34,19 @@ public sealed record PlannedRowMatch(int ExcelRow, long LoadNumber, string Proce
 /// <param name="CompletionPercent">null означает «не менять существующее значение».</param>
 /// <param name="MissingFromOrders">
 /// Заказ есть в «Плане», но сегодня пропал из «Заказов на отгрузку». Количество обнуляется,
-/// а номер загрузки подсвечивается, чтобы строку было видно и можно было убрать вручную.
+/// а номер загрузки подсвечивается розовым, чтобы строку было видно и можно было убрать вручную.
+/// </param>
+/// <param name="IsNewRow">
+/// Строка заведена сегодняшним запуском. Номер загрузки подсвечивается зелёным,
+/// чтобы новые строки было видно среди вчерашних.
 /// </param>
 public sealed record OrderRowUpdate(
     long LoadNumber,
     double Quantity,
     string? Status,
     double? CompletionPercent,
-    bool MissingFromOrders = false);
+    bool MissingFromOrders = false,
+    bool IsNewRow = false);
 
 /// <summary>Изменение агрегатной строки.</summary>
 public sealed record AggregateUpdate(PlanAggregateTarget Target, double Quantity);

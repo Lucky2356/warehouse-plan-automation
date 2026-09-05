@@ -6,6 +6,26 @@ using WarehousePlanAutomation.Core.Text;
 
 namespace WarehousePlanAutomation.Excel;
 
+/// <summary>
+/// Результат поиска листа. <see cref="Sheet"/> заполнен, когда подошёл ровно один лист;
+/// иначе <see cref="Candidates"/> перечисляет неоднозначные названия (пустой список -
+/// не нашлось ни одного).
+/// </summary>
+internal sealed record SheetLookup(object? Sheet, IReadOnlyList<string> Candidates);
+
+/// <summary>Пометка строки «Плана» цветом.</summary>
+internal enum RowMark
+{
+    /// <summary>Пометки нет; своя заливка снимается.</summary>
+    None,
+
+    /// <summary>Строка добавлена сегодня - зелёная.</summary>
+    Added,
+
+    /// <summary>Заказ пропал из выгрузки, строку нужно разобрать вручную - розовая.</summary>
+    Missing,
+}
+
 /// <summary>Границы прямоугольника листа в абсолютных координатах Excel.</summary>
 internal readonly record struct SheetBounds(int FirstRow, int FirstColumn, int RowCount, int ColumnCount)
 {
@@ -21,27 +41,54 @@ internal readonly record struct SheetBounds(int FirstRow, int FirstColumn, int R
 /// </summary>
 internal static class ExcelSheetOperations
 {
-    public static object? FindSheet(object workbookObject, string name, ComScope scope)
+    /// <summary>
+    /// Ищет лист по началу названия: аналитик дописывает к нему дату или пометку
+    /// («Заказы на отгрузку 04_09», «Журнал заказов на отгрузку тест»), и это правильное
+    /// название. Точное совпадение сильнее: если лист назван ровно так, как в схеме,
+    /// берётся он, даже когда есть листы с более длинными названиями.
+    ///
+    /// Несколько подходящих листов - не повод угадывать: такой случай возвращается
+    /// вызывающему как список названий, чтобы он объяснил его человеку.
+    /// </summary>
+    public static SheetLookup FindSheet(object workbookObject, string name, ComScope scope)
     {
         dynamic workbook = workbookObject;
         var wanted = TextUtils.NormalizeKey(name);
         dynamic sheets = scope.Track(workbook.Worksheets);
         int count = sheets.Count;
 
+        var names = new List<string>(count);
         for (var index = 1; index <= count; index++)
         {
             dynamic sheet = sheets[index];
             string sheetName = sheet.Name;
-            if (string.Equals(TextUtils.NormalizeKey(sheetName), wanted, StringComparison.Ordinal))
-            {
-                scope.Track(sheet);
-                return (object)sheet;
-            }
-
+            names.Add(sheetName);
             ComUtils.Release(sheet);
         }
 
-        return null;
+        var exact = new List<int>();
+        var byPrefix = new List<int>();
+        for (var index = 0; index < names.Count; index++)
+        {
+            var key = TextUtils.NormalizeKey(names[index]);
+            if (string.Equals(key, wanted, StringComparison.Ordinal))
+            {
+                exact.Add(index);
+            }
+            else if (key.StartsWith(wanted, StringComparison.Ordinal))
+            {
+                byPrefix.Add(index);
+            }
+        }
+
+        var matches = exact.Count > 0 ? exact : byPrefix;
+        if (matches.Count != 1)
+        {
+            return new SheetLookup(null, matches.Select(index => names[index]).ToList());
+        }
+
+        dynamic found = scope.Track(sheets[matches[0] + 1]);
+        return new SheetLookup((object)found, Array.Empty<string>());
     }
 
     public static SheetGrid ReadGrid(object sheetObject, bool withFormulas)
@@ -173,16 +220,22 @@ internal static class ExcelSheetOperations
     }
 
     /// <summary>
-    /// Розовая заливка ячейки - стандартный цвет Excel «Плохо» (RGB 255 199 206).
+    /// Розовая заливка - стандартный цвет Excel «Плохо» (RGB 255 199 206).
     /// В COM цвет задаётся в порядке BGR, отсюда 0xCEC7FF.
     /// </summary>
-    private const int WarningFill = 0xCEC7FF;
+    private const int MissingFill = 0xCEC7FF;
 
     /// <summary>
-    /// Помечает или снимает пометку с ячейки. Снимается заливка только своя:
+    /// Зелёная заливка - парный к нему цвет Excel «Хорошо» (RGB 198 239 206),
+    /// в порядке BGR 0xCEEFC6.
+    /// </summary>
+    private const int AddedFill = 0xCEEFC6;
+
+    /// <summary>
+    /// Помечает или снимает пометку с ячейки. Снимаются только свои две заливки:
     /// если аналитик покрасила ячейку сама, её цвет сохраняется.
     /// </summary>
-    public static void SetWarningFill(object sheetObject, int row, int column, bool highlight)
+    public static void SetRowMark(object sheetObject, int row, int column, RowMark mark)
     {
         dynamic sheet = sheetObject;
         using var scope = new ComScope();
@@ -190,14 +243,20 @@ internal static class ExcelSheetOperations
         dynamic cell = scope.Track(cells[row, column]);
         dynamic interior = scope.Track(cell.Interior);
 
-        if (highlight)
+        if (mark != RowMark.None)
         {
-            interior.Color = WarningFill;
+            interior.Color = mark == RowMark.Added ? AddedFill : MissingFill;
             return;
         }
 
         object? current = interior.Color;
-        if (current is not null && Convert.ToInt32(current, CultureInfo.InvariantCulture) == WarningFill)
+        if (current is null)
+        {
+            return;
+        }
+
+        var color = Convert.ToInt32(current, CultureInfo.InvariantCulture);
+        if (color == MissingFill || color == AddedFill)
         {
             interior.ColorIndex = ExcelConstants.XlColorIndexNone;
         }
@@ -391,28 +450,6 @@ internal static class ExcelSheetOperations
         dynamic rows = scope.Track(sheet.Rows);
         dynamic target = scope.Track(rows[row]);
         target.RowHeight = height;
-    }
-
-    /// <summary>Переносит строку целиком: вырезает и вставляет перед целевой строкой.</summary>
-    public static void MoveRow(
-        object applicationObject,
-        object sheetObject,
-        int fromRow,
-        int toRow,
-        ColumnRange columns)
-    {
-        dynamic application = applicationObject;
-        dynamic sheet = sheetObject;
-
-        using (var scope = new ComScope())
-        {
-            dynamic source = scope.Track(sheet.Range[BlockReference(fromRow, fromRow, columns)]);
-            source.Cut();
-            dynamic destination = scope.Track(sheet.Range[BlockReference(toRow, toRow, columns)]);
-            destination.Insert(ExcelConstants.XlDown);
-        }
-
-        application.CutCopyMode = false;
     }
 
     private static string RowReference(int start, int end) =>

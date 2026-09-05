@@ -148,6 +148,39 @@ public class OrderClassifierTests
         Assert.Empty(result.Groups);
     }
 
+    [Theory]
+    [InlineData("ЗП063-1739")]
+    [InlineData("ЗП063-1739 Номер загрузки 55388195 <Подбор:>")]
+    public void СтрокиЗП_УдаляютсяБезПереноса(string comment)
+    {
+        // Номер загрузки в такой строке роли не играет: документ «ЗП» в план не попадает.
+        var rows = new[] { Row(2, "Новосибирск-M77a", comment, 12) };
+
+        var result = OrderClassifier.Classify(rows);
+
+        Assert.Equal(12d, result.Total(OrderCategory.ZpDocument));
+        Assert.Contains(2, result.RowsToDelete);
+        Assert.Empty(result.Groups);
+    }
+
+    [Fact]
+    public void СтрокиЗП_НеВлияютНаИтогиПодразделений()
+    {
+        // «Опт» и маркетплейсы разбираются по подразделению раньше: их количества
+        // нужны в итогах блоков, и признак «ЗП» их оттуда не убирает.
+        var rows = new[]
+        {
+            Row(2, "Опт Москва", "ЗП063-1739 отгрузка", 40),
+            Row(3, "Ozon", "ЗП063-1740 Озон Екб", 25),
+        };
+
+        var result = OrderClassifier.Classify(rows);
+
+        Assert.Equal(40d, result.Total(OrderCategory.Wholesale));
+        Assert.Equal(25d, result.Total(OrderCategory.MarketplaceSupplies));
+        Assert.Equal(0d, result.Total(OrderCategory.ZpDocument));
+    }
+
     [Fact]
     public void РеальныеЗаказы_ГруппируютсяПоНомеруЗагрузки()
     {

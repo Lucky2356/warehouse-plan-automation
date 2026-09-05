@@ -137,6 +137,8 @@ public static class PlanUpdateBuilder
             }
         }
 
+        var addedToday = new HashSet<long>(newRows.Select(spec => spec.LoadNumber));
+
         var updates = new List<OrderRowUpdate>(loadNumbers.Count);
         foreach (var loadNumber in loadNumbers)
         {
@@ -144,16 +146,18 @@ public static class PlanUpdateBuilder
             // и помечается: строку нужно разобрать вручную.
             var inOrders = todayGroups.TryGetValue(loadNumber, out var group);
             var quantity = inOrders ? group!.Quantity : 0d;
+            var isNew = addedToday.Contains(loadNumber);
 
             var outcome = JournalEvaluator.Evaluate(loadNumber, journal);
             if (!outcome.Found)
             {
-                updates.Add(new OrderRowUpdate(loadNumber, 0d, null, null, !inOrders));
+                updates.Add(new OrderRowUpdate(loadNumber, 0d, null, null, !inOrders, isNew));
                 continue;
             }
 
             var status = outcome.SetInAssembly ? OrderTextRules.InAssemblyStatus : null;
-            updates.Add(new OrderRowUpdate(loadNumber, quantity, status, outcome.PercentToSet, !inOrders));
+            updates.Add(new OrderRowUpdate(
+                loadNumber, quantity, status, outcome.PercentToSet, !inOrders, isNew));
         }
 
         return updates;

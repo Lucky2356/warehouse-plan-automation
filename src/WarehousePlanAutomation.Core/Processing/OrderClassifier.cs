@@ -5,8 +5,9 @@ namespace WarehousePlanAutomation.Core.Processing;
 
 /// <summary>
 /// Классификация строк листа «Заказы на отгрузку» строго в порядке, заданном ТЗ:
-/// «Опт» - «777» - маркетплейсы (возвраты, из поставок, хранение) - служебные строки -
-/// реальные заказы по номеру загрузки. Всё, что не подошло, остаётся на листе.
+/// «Опт» - «777» - маркетплейсы (возвраты, из поставок, хранение) - документы «ЗП» -
+/// служебные строки - реальные заказы по номеру загрузки.
+/// Всё, что не подошло, остаётся на листе.
 /// </summary>
 public static class OrderClassifier
 {
@@ -64,6 +65,14 @@ public static class OrderClassifier
             return ShipmentCodeParser.ContainsCode(row.Comment)
                 ? OrderCategory.MarketplaceSupplies
                 : OrderCategory.MarketplaceStorage;
+        }
+
+        // Проверка идёт после подразделений: строки «Опт», «777» и маркетплейсов
+        // и без того удаляются, но их количества попадают в итоги блоков, и признак
+        // «ЗП» в комментарии не повод выкидывать их из этих сумм.
+        if (OrderTextRules.IsZpRow(row.Comment))
+        {
+            return OrderCategory.ZpDocument;
         }
 
         if (OrderTextRules.IsServiceRow(row.Comment))

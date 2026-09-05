@@ -168,17 +168,10 @@ public sealed class ExcelWorkbookProcessor : IWorkbookProcessor
             application.Calculation = ExcelConstants.XlCalculationAutomatic;
             application.CalculateFull();
 
-            Report(progress, "Приоритизация и нумерация", 85);
+            Report(progress, "Нумерация строк", 85);
             planLayout = ReadPlanLayout(sheets.Plan);
-            var arrangement = PlanArrangementBuilder.Build(planLayout);
-            foreach (var move in arrangement.Moves)
-            {
-                ExcelSheetOperations.MoveRow(
-                    applicationObject, sheets.Plan, move.FromRow, move.ToRow, planColumns);
-            }
-
             var numberColumn = planLayout.Headers[SheetSchema.Plan.Number];
-            foreach (var assignment in arrangement.Numbers)
+            foreach (var assignment in PlanNumberingBuilder.Build(planLayout))
             {
                 ExcelSheetOperations.SetValue(sheets.Plan, assignment.ExcelRow, numberColumn, (double)assignment.Number);
             }
@@ -240,27 +233,29 @@ public sealed class ExcelWorkbookProcessor : IWorkbookProcessor
         var journal = ExcelSheetOperations.FindSheet(workbook, SheetSchema.JournalSheet, scope);
 
         var problems = new List<string>();
-        if (plan is null)
-        {
-            problems.Add("в книге нет листа «" + SheetSchema.PlanSheet + "»");
-        }
-
-        if (orders is null)
-        {
-            problems.Add("в книге нет листа «" + SheetSchema.OrdersSheet + "»");
-        }
-
-        if (journal is null)
-        {
-            problems.Add("в книге нет листа «" + SheetSchema.JournalSheet + "»");
-        }
+        Describe(plan, SheetSchema.PlanSheet, problems);
+        Describe(orders, SheetSchema.OrdersSheet, problems);
+        Describe(journal, SheetSchema.JournalSheet, problems);
 
         if (problems.Count > 0)
         {
             throw new WorkbookValidationException(problems);
         }
 
-        return new WorkbookSheets(plan!, orders!, journal!);
+        return new WorkbookSheets(plan.Sheet!, orders.Sheet!, journal.Sheet!);
+    }
+
+    private static void Describe(SheetLookup lookup, string name, List<string> problems)
+    {
+        if (lookup.Sheet is not null)
+        {
+            return;
+        }
+
+        problems.Add(lookup.Candidates.Count == 0
+            ? "в книге нет листа, название которого начинается с «" + name + "»"
+            : "в книге несколько листов с названием, начинающимся с «" + name + "»: " +
+              string.Join(", ", lookup.Candidates) + " - оставьте один");
     }
 
     private static PlanLayout ReadPlanLayout(object planSheet) =>
@@ -423,7 +418,10 @@ public sealed class ExcelWorkbookProcessor : IWorkbookProcessor
                     "по которой можно построить новую строку заказа.");
             }
 
-            var insertBefore = section.DataRows.Count > 0 ? section.LastDataRow : section.HeaderRow + 1;
+            // Новая строка встаёт под последнюю строку блока: порядок строк, который
+            // выстроила аналитик, программа не трогает, а всё сегодняшнее собирается
+            // внизу блока, где его видно одним куском.
+            var insertBefore = section.LastDataRow + 1;
             ExcelSheetOperations.InsertCopiedRow(
                 application, planSheet, template.ExcelRow, insertBefore, columns);
             FillNewRow(planSheet, layout.Headers, insertBefore, spec);
@@ -618,10 +616,13 @@ public sealed class ExcelWorkbookProcessor : IWorkbookProcessor
                 continue;
             }
 
-            // Заказ пропал из сегодняшней выгрузки: количество обнулено, и номер
-            // подсвечивается, чтобы строку было видно и можно было убрать вручную.
-            ExcelSheetOperations.SetWarningFill(
-                planSheet, row.ExcelRow, loadNumberColumn, update.MissingFromOrders);
+            // Номер загрузки подсвечивается: зелёным - строка, добавленная сегодня,
+            // розовым - заказ, который пропал из выгрузки и которого в плане быть уже
+            // не должно. Строка прошлого дня свою пометку теряет.
+            var mark = update.MissingFromOrders
+                ? RowMark.Missing
+                : update.IsNewRow ? RowMark.Added : RowMark.None;
+            ExcelSheetOperations.SetRowMark(planSheet, row.ExcelRow, loadNumberColumn, mark);
 
             // Формулы не заменяются значениями: если пользователь считает какое-то из
             // этих полей формулой, она сохраняется.

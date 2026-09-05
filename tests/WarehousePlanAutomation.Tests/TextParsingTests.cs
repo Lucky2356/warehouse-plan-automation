@@ -92,40 +92,22 @@ public class TextParsingTests
     }
 
     [Theory]
-    [InlineData("Сроч подтоварка")]
-    [InlineData("Срочно, обувь")]
-    [InlineData("Срочная подтоварка 28.08")]
-    [InlineData("СРОЧНАЯ отгрузка ШПП")]
-    public void OrderTextRules_ОпределяетСрочность(string text)
+    [InlineData("ЗП063-1739")]
+    [InlineData("Отгрузка ЗП063-1739 Номер загрузки 55388195")]
+    [InlineData("зп 063-1739")]
+    public void OrderTextRules_НаходитДокументЗП(string comment)
     {
-        Assert.True(OrderTextRules.IsUrgent(text));
-    }
-
-    [Fact]
-    public void OrderTextRules_НеСчитаетСрочнымиОбычныеЗаказы()
-    {
-        Assert.False(OrderTextRules.IsUrgent("1022-015 Пуховики_получение в рознице 20.09"));
+        Assert.True(OrderTextRules.IsZpRow(comment));
     }
 
     [Theory]
-    [InlineData("1100-026, 028 Обувь СЕТ1_в рознице", SetMonoKind.Set)]
-    [InlineData("1100-026, 028 Обувь СЕТ2_в рознице", SetMonoKind.Set)]
-    [InlineData("1117-029 Кеды на Юг МОНО_в рознице", SetMonoKind.Mono)]
-    [InlineData("1022-015 Пуховики", SetMonoKind.Neutral)]
-    public void OrderTextRules_ОпределяетСетИМоно(string supplies, SetMonoKind expected)
+    [InlineData("1022-015 Пуховики_получение в рознице 20.09")]
+    [InlineData("Срочная подтоварка_Хранение, хранилище")]
+    public void OrderTextRules_НеПутаетЗПСЧастямиДругихСлов(string comment)
     {
-        Assert.Equal(expected, OrderTextRules.DetectSetMono(supplies));
-    }
-
-    [Theory]
-    [InlineData("Обувь_дата в сети с 01.10")]
-    [InlineData("Кассета для украшений")]
-    [InlineData("Монолитная упаковка")]
-    public void OrderTextRules_НеПутаетСетИМоноСЧастямиДругихСлов(string supplies)
-    {
-        // «СЕТ» и «МОНО» ищутся как отдельные признаки, а не как подстроки:
-        // иначе «в сети» и «кассета» стали бы признаком СЕТ.
-        Assert.Equal(SetMonoKind.Neutral, OrderTextRules.DetectSetMono(supplies));
+        // «ЗП» ищется как отдельный признак: две буквы слишком коротки,
+        // чтобы искать их подстрокой.
+        Assert.False(OrderTextRules.IsZpRow(comment));
     }
 
     [Fact]

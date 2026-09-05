@@ -149,6 +149,46 @@ public class PlanUpdateBuilderTests
     }
 
     [Fact]
+    public void НоваяСтрока_ПомечаетсяКакДобавленнаяСегодня()
+    {
+        const long newLoadNumber = 55600009;
+        var update = Build(
+            new[]
+            {
+                Order(2, "Москва-M149",
+                    "1022-015 Пуховики_в рознице 20.09 Номер загрузки " + newLoadNumber, 251),
+            },
+            new[] { Journal(0, newLoadNumber, "ЗАПУЩЕН") });
+
+        var added = update.OrderUpdates.Single(u => u.LoadNumber == newLoadNumber);
+        Assert.True(added.IsNewRow);
+        Assert.False(added.MissingFromOrders);
+
+        // Вчерашние строки пометку не получают, иначе зелёным окрасился бы весь план.
+        Assert.All(
+            update.OrderUpdates.Where(u => u.LoadNumber != newLoadNumber),
+            u => Assert.False(u.IsNewRow));
+    }
+
+    [Fact]
+    public void ЗапланированнаяСтрока_НеСчитаетсяНовой()
+    {
+        // Строку завела аналитик, программа только вписала в неё номер загрузки:
+        // помечать её как добавленную сегодня нечестно.
+        const long newLoadNumber = 55600010;
+        var update = Build(
+            new[]
+            {
+                Order(2, "Казань-М139",
+                    PlanFixture.PlaceholderSupplies + " Номер загрузки " + newLoadNumber, 2000),
+            },
+            new[] { Journal(0, newLoadNumber, "ЗАПУЩЕН") });
+
+        Assert.Single(update.PlannedMatches);
+        Assert.False(update.OrderUpdates.Single(u => u.LoadNumber == newLoadNumber).IsNewRow);
+    }
+
+    [Fact]
     public void ИсчезнувшийЗаказ_ПолучаетНулевоеКоличество()
     {
         var update = Build(

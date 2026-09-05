@@ -29,6 +29,9 @@ public enum OrderCategory
     /// <summary>Служебные строки: «автозаказ», «вирт», «фото».</summary>
     Service,
 
+    /// <summary>Строка документа «ЗП»: удаляется с листа и в план не переносится.</summary>
+    ZpDocument,
+
     /// <summary>Реальный заказ с номером загрузки.</summary>
     RealOrder,
 

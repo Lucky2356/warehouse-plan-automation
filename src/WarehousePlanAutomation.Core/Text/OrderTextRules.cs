@@ -1,16 +1,5 @@
 namespace WarehousePlanAutomation.Core.Text;
 
-/// <summary>
-/// Признак «СЕТ» / «МОНО» в колонке «Поставки». Значения задают порядок сортировки
-/// внутри одной даты: сначала СЕТ, затем МОНО, затем всё остальное.
-/// </summary>
-public enum SetMonoKind
-{
-    Set = 0,
-    Mono = 1,
-    Neutral = 2,
-}
-
 /// <summary>Способ сопоставления названия подразделения с признаком.</summary>
 public enum MarkerMatch
 {
@@ -33,14 +22,14 @@ public sealed record DivisionMarker(string Text, MarkerMatch Match)
 public static class OrderTextRules
 {
     public const string ReturnsMarker = "возвр";
-    public const string UrgencyMarker = "сроч";
-    public const string SetMarker = "сет";
-    public const string MonoMarker = "моно";
     public const string LoadedComment = "Заказы загружены.";
     public const string PlaceholderCommentMarker = "заказы будут загружены";
     public const string InAssemblyStatus = "в сборке";
     public const string CrossDockProcessing = "перекр";
     public const string JournalStartedStatus = "запущен";
+
+    /// <summary>Документ «ЗП» в комментарии выгрузки, например «ЗП063-1739».</summary>
+    public const string ZpDocumentMarker = "зп";
 
     /// <summary>
     /// Строки, которые удаляются без переноса куда-либо.
@@ -103,26 +92,17 @@ public static class OrderTextRules
 
     public static bool IsServiceRow(string? comment) => TextUtils.ContainsAnyKey(comment, ServiceMarkers);
 
-    public static bool IsReturn(string? text) => TextUtils.ContainsKey(text, ReturnsMarker);
+    /// <summary>
+    /// Строка документа «ЗП»: такие строки удаляются с листа выгрузки и в план не переносятся.
+    /// Признак ищется как отдельный, а не как подстрока: «ЗП063-1739» находится,
+    /// а «зп» внутри другого слова - нет.
+    /// </summary>
+    public static bool IsZpRow(string? comment) => TextUtils.ContainsToken(comment, ZpDocumentMarker);
 
-    public static bool IsUrgent(string? text) => TextUtils.ContainsKey(text, UrgencyMarker);
+    public static bool IsReturn(string? text) => TextUtils.ContainsKey(text, ReturnsMarker);
 
     public static bool IsPlaceholderComment(string? text) =>
         TextUtils.ContainsKey(text, PlaceholderCommentMarker);
-
-    /// <summary>
-    /// Признак «СЕТ» / «МОНО» ищется как отдельный признак, а не как подстрока:
-    /// «СЕТ1» и «СЕТ2» находятся, а «в сети» и «кассета» - нет.
-    /// </summary>
-    public static SetMonoKind DetectSetMono(string? supplies)
-    {
-        if (TextUtils.ContainsToken(supplies, SetMarker))
-        {
-            return SetMonoKind.Set;
-        }
-
-        return TextUtils.ContainsToken(supplies, MonoMarker) ? SetMonoKind.Mono : SetMonoKind.Neutral;
-    }
 
     private static bool Matches(string? division, IReadOnlyList<DivisionMarker> markers)
     {
