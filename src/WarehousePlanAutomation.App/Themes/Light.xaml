@@ -1,0 +1,72 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!--
+        Светлая тема: белые карточки на мягком тёплом поле, светлая боковая панель.
+        Тема светлая целиком - в этом и смысл выбора: тот, кому светлое удобнее,
+        не должен получать тёмную полосу сбоку.
+
+        Текст взят заметно темнее, чем принято в «мягких» палитрах: окно стоит рядом
+        с Excel, в него смотрят весь день, и серый текст на сером поле тут не проходит.
+    -->
+
+    <SolidColorBrush x:Key="GroundBrush" Color="#F2F2EE" />
+    <SolidColorBrush x:Key="CardBrush" Color="#FFFFFF" />
+    <SolidColorBrush x:Key="CardBorderBrush" Color="#DEDDD6" />
+    <SolidColorBrush x:Key="HairlineBrush" Color="#E8E7E1" />
+    <SolidColorBrush x:Key="TileBrush" Color="#F2F2ED" />
+    <SolidColorBrush x:Key="InputBrush" Color="#FAFAF7" />
+    <SolidColorBrush x:Key="InputBorderBrush" Color="#CFCEC6" />
+
+    <SolidColorBrush x:Key="InkBrush" Color="#17171A" />
+    <SolidColorBrush x:Key="InkSecondaryBrush" Color="#4E4E47" />
+    <SolidColorBrush x:Key="InkMutedBrush" Color="#6C6C64" />
+    <SolidColorBrush x:Key="InkFaintBrush" Color="#83837A" />
+
+    <SolidColorBrush x:Key="AccentBrush" Color="#3B3F94" />
+    <SolidColorBrush x:Key="AccentHoverBrush" Color="#31357F" />
+    <SolidColorBrush x:Key="AccentPressedBrush" Color="#292D6C" />
+    <SolidColorBrush x:Key="AccentDisabledBrush" Color="#B7B8D2" />
+    <SolidColorBrush x:Key="AccentSoftBrush" Color="#E9EAF5" />
+    <SolidColorBrush x:Key="OnAccentBrush" Color="#FFFFFF" />
+    <SolidColorBrush x:Key="TrackBrush" Color="#DFDED7" />
+
+    <SolidColorBrush x:Key="ButtonBorderBrush" Color="#B9B8B0" />
+    <SolidColorBrush x:Key="ButtonHoverBrush" Color="#F0F0EB" />
+    <SolidColorBrush x:Key="ButtonPressedBrush" Color="#E4E3DC" />
+    <SolidColorBrush x:Key="DisabledSurfaceBrush" Color="#EFEFEA" />
+    <SolidColorBrush x:Key="FocusRingBrush" Color="#17171A" />
+
+    <SolidColorBrush x:Key="ScrollThumbBrush" Color="#BAB9B0" />
+    <SolidColorBrush x:Key="ScrollThumbHoverBrush" Color="#97968D" />
+
+    <!--
+        Панель чуть темнее поля, а выбранная задача в ней - белая карточка: полоса
+        отходит на второй план, а выбранное читается как приподнятое.
+    -->
+    <SolidColorBrush x:Key="NavBrush" Color="#E7E7E1" />
+    <SolidColorBrush x:Key="NavBorderBrush" Color="#D2D1C9" />
+    <SolidColorBrush x:Key="NavHoverBrush" Color="#DEDDD6" />
+    <SolidColorBrush x:Key="NavSelectedBrush" Color="#FFFFFF" />
+    <SolidColorBrush x:Key="NavAccentBrush" Color="#3B3F94" />
+    <SolidColorBrush x:Key="NavMarkBrush" Color="#3B3F94" />
+    <SolidColorBrush x:Key="NavInkBrush" Color="#17171A" />
+    <SolidColorBrush x:Key="NavInkSecondaryBrush" Color="#4E4E47" />
+    <SolidColorBrush x:Key="NavInkFaintBrush" Color="#7C7C73" />
+
+    <!-- Смысловые цвета: успех, внимание, ошибка. С акцентом не смешиваются. -->
+    <SolidColorBrush x:Key="SuccessBrush" Color="#1F6B36" />
+    <SolidColorBrush x:Key="SuccessSoftBrush" Color="#E3F0E7" />
+    <SolidColorBrush x:Key="SuccessBorderBrush" Color="#B3D2BE" />
+    <SolidColorBrush x:Key="SuccessStripBrush" Color="#F4F9F5" />
+
+    <SolidColorBrush x:Key="WarnBrush" Color="#8F5407" />
+    <SolidColorBrush x:Key="WarnInkBrush" Color="#6F4106" />
+    <SolidColorBrush x:Key="WarnSoftBrush" Color="#FAEFDD" />
+    <SolidColorBrush x:Key="WarnBorderBrush" Color="#DDB878" />
+
+    <SolidColorBrush x:Key="ErrorBrush" Color="#96201B" />
+    <SolidColorBrush x:Key="ErrorSoftBrush" Color="#F9EAE9" />
+    <SolidColorBrush x:Key="ErrorBorderBrush" Color="#DBB4B1" />
+
+</ResourceDictionary>

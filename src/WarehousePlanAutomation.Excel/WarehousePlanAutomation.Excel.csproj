@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <RootNamespace>WarehousePlanAutomation.Excel</RootNamespace>
+    <AssemblyName>WarehousePlanAutomation.Excel</AssemblyName>
+    <!--
+      Используется позднее связывание с COM-сервером Excel.Application:
+      библиотеки типов Microsoft Office на машине сборки не нужны,
+      а приложение работает с любой установленной версией Microsoft Excel.
+    -->
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\WarehousePlanAutomation.Core\WarehousePlanAutomation.Core.csproj" />
+  </ItemGroup>
+
+</Project>

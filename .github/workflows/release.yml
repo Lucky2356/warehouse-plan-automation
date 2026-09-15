@@ -1,0 +1,122 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  PUBLISH_DIR: artifacts/publish
+  PACKAGE_DIR: artifacts/package
+
+jobs:
+  release:
+    name: Сборка дистрибутива Windows x64
+    runs-on: windows-latest
+
+    steps:
+      - name: Получение исходного кода
+        uses: actions/checkout@v7
+
+      - name: Установка .NET 8
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Определение версии
+        id: version
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF -like 'refs/tags/v*') {
+            $version = $env:GITHUB_REF -replace '^refs/tags/v', ''
+          } else {
+            $version = '0.0.0-build.' + $env:GITHUB_RUN_NUMBER
+          }
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "Версия сборки: $version"
+
+      - name: Восстановление пакетов
+        run: dotnet restore WarehousePlanAutomation.sln
+
+      - name: Тесты
+        run: dotnet test WarehousePlanAutomation.sln --configuration Release
+
+      - name: Публикация в один файл (Windows x64, self-contained)
+        run: >
+          dotnet publish src/WarehousePlanAutomation.App/WarehousePlanAutomation.App.csproj
+          --configuration Release
+          --runtime win-x64
+          --self-contained true
+          --output ${{ env.PUBLISH_DIR }}
+          -p:PublishSingleFile=true
+          -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:EnableCompressionInSingleFile=true
+          -p:BuiltInComInteropSupport=true
+          -p:PublishTrimmed=false
+          -p:DebugType=none
+
+      - name: Подготовка файла к публикации
+        id: package
+        shell: pwsh
+        run: |
+          $version = '${{ steps.version.outputs.version }}'
+          $published = Join-Path $env:PUBLISH_DIR 'WarehousePlanAutomation.exe'
+          if (-not (Test-Path $published)) { throw "Не найден $published" }
+
+          $extra = Get-ChildItem $env:PUBLISH_DIR -File | Where-Object { $_.Name -ne 'WarehousePlanAutomation.exe' }
+          if ($extra) { throw "Публикация вернула больше одного файла: $($extra.Name -join ', ')" }
+
+          $name = "WarehousePlanAutomation-$version-win-x64.exe"
+          New-Item -ItemType Directory -Force -Path $env:PACKAGE_DIR | Out-Null
+          $target = Join-Path $env:PACKAGE_DIR $name
+          Copy-Item $published -Destination $target
+          "name=$name" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "path=$target" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Get-Item $target | Select-Object Name, Length
+
+      - name: Загрузка артефакта сборки
+        uses: actions/upload-artifact@v7
+        with:
+          name: WarehousePlanAutomation-win-x64
+          path: ${{ env.PACKAGE_DIR }}/*.exe
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Создание релиза и прикрепление .exe
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $version = '${{ steps.version.outputs.version }}'
+          $exe = '${{ steps.package.outputs.path }}'
+
+          # Описание выпуска показывается не только на GitHub, но и во вкладке
+          # «Обновления» самой программы, поэтому его пишет человек - файлом в репозитории.
+          # Без такого файла остаётся общая заготовка.
+          $prepared = "docs/release-notes/$version.md"
+          if (Test-Path $prepared) {
+            $notesFile = $prepared
+            "Описание выпуска взято из $prepared"
+          } else {
+            $notes = @(
+              'Готовая программа «Формирование отчётов» для Windows x64.',
+              '',
+              'Скачайте единственный .exe и запустите - установка и распаковка не нужны.',
+              '',
+              'Требования: Windows x64 и установленный Microsoft Excel (2016 и новее, включая 2021 и 365).',
+              'Отдельная установка .NET не нужна: всё встроено в файл.'
+            ) -join "`n"
+            $notesFile = Join-Path $env:RUNNER_TEMP 'release-notes.md'
+            $notes | Out-File -FilePath $notesFile -Encoding utf8
+            "Файл $prepared не найден, взято общее описание"
+          }
+
+          gh release create "v$version" $exe --title "v$version" --notes-file $notesFile
