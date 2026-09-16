@@ -744,6 +744,54 @@ internal static class ExcelSheetOperations
     }
 
     /// <summary>
+    /// Находит колонку с одним из заголовков <paramref name="keys"/>, а если её нет -
+    /// дописывает новую сразу за последним заполненным заголовком. Оформление заголовка
+    /// копируется из колонки <paramref name="formatSource"/>; если её нет (0), берётся
+    /// последний заголовок строки - новая колонка выглядит так же, как соседние.
+    /// </summary>
+    /// <returns>Номер найденной или созданной колонки.</returns>
+    public static int EnsureHeaderColumn(
+        object sheetObject,
+        int headerRow,
+        int knownLastColumn,
+        string title,
+        IReadOnlyList<string> keys,
+        int formatSource = 0)
+    {
+        var bounds = GetUsedBounds(sheetObject);
+        var lastColumn = Math.Max(bounds.FirstColumn + bounds.ColumnCount - 1, knownLastColumn);
+        var grid = ReadBlock(sheetObject, headerRow, headerRow, 1, lastColumn, withFormulas: false);
+
+        var lastHeader = 0;
+        for (var column = 1; column <= lastColumn; column++)
+        {
+            var key = TextUtils.NormalizeKey(grid.Text(headerRow, column));
+            if (key.Length == 0)
+            {
+                continue;
+            }
+
+            lastHeader = column;
+            if (keys.Contains(key, StringComparer.Ordinal))
+            {
+                return column;
+            }
+        }
+
+        var created = lastHeader + 1;
+        using (var scope = new ComScope())
+        {
+            dynamic sheet = sheetObject;
+            dynamic from = scope.Track(sheet.Cells[headerRow, formatSource > 0 ? formatSource : Math.Max(lastHeader, 1)]);
+            dynamic to = scope.Track(sheet.Cells[headerRow, created]);
+            from.Copy(to);
+        }
+
+        SetValue(sheetObject, headerRow, created, title);
+        return created;
+    }
+
+    /// <summary>
     /// Вставляет колонки перед указанной. Вставка именно внутрь занятого диапазона -
     /// это то, ради чего метод существует: так Excel сам растягивает формулы вида
     /// СУММ(N21:Y21) и СУММЕСЛИ($N$27:$Y$27; …), которые охватывают все блоки сразу.

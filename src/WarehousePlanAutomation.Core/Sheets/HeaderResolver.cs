@@ -45,7 +45,7 @@ public static class HeaderResolver
         IReadOnlyList<ColumnSpec> specs,
         int scanRows = DefaultScanRows)
     {
-        var bestMissing = specs.Select(s => s.DisplayName).ToList();
+        var bestMissing = specs.Where(s => !s.Optional).Select(s => s.DisplayName).ToList();
         var bestRow = grid.FirstRow;
 
         var lastScanned = Math.Min(grid.LastRow, grid.FirstRow + scanRows - 1);
@@ -92,7 +92,13 @@ public static class HeaderResolver
             var column = Match(headers, spec, used);
             if (column < 0)
             {
-                missing.Add(spec.DisplayName);
+                // Необязательная колонка не мешает разбору и не участвует в выборе
+                // строки заголовков: программа допишет её сама.
+                if (!spec.Optional)
+                {
+                    missing.Add(spec.DisplayName);
+                }
+
                 continue;
             }
 

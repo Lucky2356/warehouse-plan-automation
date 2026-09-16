@@ -154,6 +154,57 @@ public class SheetReaderTests
         Assert.DoesNotContain("«Запрет»", error.Message);
     }
 
+    /// <summary>Лист без колонок «Заметки» и «Проверка»: их программа дописывает сама.</summary>
+    private static SheetGrid LoadSheetWithoutNote() =>
+        SheetGrid.FromRows(1, 1, new List<object?[]>
+        {
+            new object?[]
+            {
+                "Код клиента", "Сектор", "Группа", "АЦР", "Артикул", "Цвет", "Размер", "Код", "РЦ",
+                "в подтоварку", "комент", "Приоритет",
+                "Фактическое кол-во, которое можно собрать на ВБ+Озон", "Комментарий (на запрет)",
+                "Прогнозный sellout",
+            },
+        });
+
+    [Fact]
+    public void Подтоварка_БезЗаметокИПроверки_КнигаРазбирается()
+    {
+        var headers = RestockSchema.Load.ResolveHeaders(LoadSheetWithoutNote());
+
+        Assert.Equal(1, headers.HeaderRow);
+        Assert.Equal(10, headers[RestockSchema.Load.Quantity]);
+        Assert.False(headers.TryGet(RestockSchema.Load.Note, out _));
+        Assert.False(headers.TryGet(RestockSchema.Load.Check, out _));
+    }
+
+    [Fact]
+    public void Подтоварка_ГотоваяКнига_ЗаметкиИПроверкаНаходятся()
+    {
+        var headers = RestockSchema.Load.ResolveHeaders(LoadSheetHeaders("комент", extra: "Проверка"));
+
+        Assert.Equal(16, headers[RestockSchema.Load.Note]);
+        Assert.Equal(17, headers[RestockSchema.Load.Check]);
+    }
+
+    [Fact]
+    public void Подтоварка_БезОбязательнойКолонки_ЖалуетсяТолькоНаНеё()
+    {
+        // «Заметки» и «Проверка» необязательны и в список пропавших не попадают.
+        var error = Assert.Throws<WorkbookValidationException>(() => RestockSchema.Load.ResolveHeaders(
+            SheetGrid.FromRows(1, 1, new List<object?[]>
+            {
+                new object?[]
+                {
+                    "Код клиента", "Сектор", "Группа", "АЦР", "Артикул", "Цвет", "Размер", "Код", "РЦ",
+                    "в подтоварку", "комент", "Приоритет",
+                    "Фактическое кол-во", "Комментарий (на запрет)",
+                },
+            })));
+
+        Assert.Contains("Прогнозный sellout", Assert.Single(error.Problems));
+    }
+
     [Fact]
     public void ExcelColumn_ПреобразуетНомераВБуквы()
     {

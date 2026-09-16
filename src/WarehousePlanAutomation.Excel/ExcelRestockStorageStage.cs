@@ -1156,39 +1156,14 @@ internal sealed class ExcelRestockStorageStage
     /// Колонка «на загрузку» по названию; нет - дописывается справа от последней колонки
     /// с заголовком, в оформлении заголовка «Заметки».
     /// </summary>
-    private static int EnsureColumn(object sheet, HeaderMap headers, string title, IReadOnlyList<string> keys)
-    {
-        var bounds = ExcelSheetOperations.GetUsedBounds(sheet);
-        var lastColumn = Math.Max(bounds.FirstColumn + bounds.ColumnCount - 1, headers.Columns.Values.Max());
-        var grid = ExcelSheetOperations.ReadBlock(sheet, headers.HeaderRow, headers.HeaderRow, 1, lastColumn, withFormulas: false);
-
-        var lastHeader = 0;
-        for (var column = 1; column <= lastColumn; column++)
-        {
-            var key = TextUtils.NormalizeKey(grid.Text(headers.HeaderRow, column));
-            if (key.Length == 0)
-            {
-                continue;
-            }
-
-            lastHeader = column;
-            if (keys.Contains(key, StringComparer.Ordinal))
-            {
-                return column;
-            }
-        }
-
-        var created = lastHeader + 1;
-        using (var scope = new ComScope())
-        {
-            dynamic from = scope.Track(((dynamic)sheet).Cells[headers.HeaderRow, headers[RestockSchema.Load.Note]]);
-            dynamic to = scope.Track(((dynamic)sheet).Cells[headers.HeaderRow, created]);
-            from.Copy(to);
-        }
-
-        ExcelSheetOperations.SetValue(sheet, headers.HeaderRow, created, title);
-        return created;
-    }
+    private static int EnsureColumn(object sheet, HeaderMap headers, string title, IReadOnlyList<string> keys) =>
+        ExcelSheetOperations.EnsureHeaderColumn(
+            sheet,
+            headers.HeaderRow,
+            headers.Columns.Values.Max(),
+            title,
+            keys,
+            headers.TryGet(RestockSchema.Load.Note, out var note) ? note : 0);
 
     private static string SumIfs(string sheet, int sumColumn, int criteriaColumn, string acrLetter, int row) =>
         "=SUMIFS(" + Column(sheet, sumColumn) + "," + Column(sheet, criteriaColumn) + ",$" + acrLetter +

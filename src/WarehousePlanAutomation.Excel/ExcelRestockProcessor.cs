@@ -113,6 +113,12 @@ public sealed class ExcelRestockProcessor : IWorkbookProcessor
             Report(progress, "Чтение листа «" + RestockSchema.LoadSheet + "»", 25);
 
             var layout = ReadLayout(sheet);
+            if (CreateMissingColumns(sheet, layout))
+            {
+                // Разметка читается заново: колонок на листе стало больше.
+                layout = ReadLayout(sheet);
+            }
+
             var rows = ReadRows(sheet, layout);
             _logger.Information("Строк подтоварки: " + rows.Count + ".");
 
@@ -208,6 +214,47 @@ public sealed class ExcelRestockProcessor : IWorkbookProcessor
             new ColumnRange(
                 Math.Min(headers.Columns.Values.Min(), bounds.FirstColumn),
                 Math.Max(headers.Columns.Values.Max(), bounds.LastColumn)));
+    }
+
+    /// <summary>
+    /// Дописывает колонки, которых нет в книге: «Заметки» программа заполняет сама,
+    /// «Проверка» остаётся пустой - её считает аналитик. Дальше за ними встанут
+    /// «Место хранения» и остатки мест, так что порядок колонок выходит как в готовой
+    /// подтоварке.
+    /// </summary>
+    /// <returns>true, если хоть одна колонка создана.</returns>
+    private bool CreateMissingColumns(object sheet, LoadLayout layout)
+    {
+        var created = new List<string>();
+
+        // Номер последней колонки ведётся сам: занятый диапазон листа обновляется не сразу,
+        // и вторая колонка иначе могла бы встать на место первой.
+        var lastColumn = layout.Columns.Last;
+        foreach (var column in RestockSchema.Load.Created)
+        {
+            if (layout.Headers.TryGet(column.Name, out _))
+            {
+                continue;
+            }
+
+            lastColumn = Math.Max(
+                lastColumn,
+                ExcelSheetOperations.EnsureHeaderColumn(
+                    sheet,
+                    layout.Headers.HeaderRow,
+                    lastColumn,
+                    column.Title,
+                    column.Keys));
+            created.Add(column.Title);
+        }
+
+        if (created.Count > 0)
+        {
+            _logger.Information(
+                "На листе «" + RestockSchema.LoadSheet + "» дописаны колонки: " + string.Join(", ", created) + ".");
+        }
+
+        return created.Count > 0;
     }
 
     /// <summary>

@@ -94,7 +94,15 @@ public static class RestockSchema
         public const string Available = "Фактическое кол-во";
 
         public const string Sellout = "Прогнозный sellout";
+
+        /// <summary>Решение по «Запрету». Программа дописывает колонку, если её нет.</summary>
         public const string Note = "Заметка";
+
+        /// <summary>
+        /// Колонка аналитика рядом с «Заметками». Программа её только создаёт и оставляет
+        /// пустой: что в ней считать, решает аналитик.
+        /// </summary>
+        public const string Check = "Проверка";
 
         /// <summary>
         /// Колонки, которые переносятся на лист согласования: вся содержательная часть
@@ -135,7 +143,18 @@ public static class RestockSchema
             new ColumnSpec(Priority, new[] { "приоритет" }, exactOnly: true),
             new ColumnSpec(Available, new[] { "фактическое кол-во", "фактическое количество" }),
             new ColumnSpec(Sellout, new[] { "прогнозный sellout", "sellout" }),
-            new ColumnSpec(Note, new[] { "заметка", "заметки" }, exactOnly: true),
+            new ColumnSpec(Note, new[] { "заметка", "заметки" }, exactOnly: true, optional: true),
+            new ColumnSpec(Check, new[] { "проверка" }, exactOnly: true, optional: true),
+        };
+
+        /// <summary>
+        /// Колонки, которые программа дописывает сама, если их нет в книге. Они идут в этом
+        /// порядке сразу за колонками аналитика, а дальше - «Место хранения» и остатки мест.
+        /// </summary>
+        public static readonly IReadOnlyList<CreatedColumn> Created = new[]
+        {
+            new CreatedColumn(Note, "Заметки", new[] { "заметка", "заметки" }),
+            new CreatedColumn(Check, Check, new[] { "проверка" }),
         };
 
         /// <summary>
