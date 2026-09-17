@@ -88,8 +88,8 @@ public static class ReceivingSchema
 
         public static readonly IReadOnlyList<ColumnSpec> Specs = new[]
         {
-            new ColumnSpec(Code, new[] { "код" }, exactOnly: true),
-            new ColumnSpec(Article, new[] { "артикул" }, exactOnly: true),
+            new ColumnSpec(Code, new[] { "код" }, exactOnly: true, optional: true),
+            new ColumnSpec(Article, new[] { "артикул" }, exactOnly: true, optional: true),
             new ColumnSpec(Remainder, new[] { "остатки" }, exactOnly: true),
         };
     }
@@ -207,24 +207,57 @@ public static class ReceivingSchema
 
         public static readonly IReadOnlyList<ColumnSpec> Specs = new[]
         {
-            new ColumnSpec(Address, new[] { "адрес" }, exactOnly: true),
-            new ColumnSpec(Container, new[] { "тара" }, exactOnly: true),
-            new ColumnSpec(Article, new[] { "артикул" }, exactOnly: true),
-            new ColumnSpec(Code, new[] { "код" }, exactOnly: true),
-            new ColumnSpec(Sector, new[] { "сектор" }, exactOnly: true),
-            new ColumnSpec(Group, new[] { "группа" }, exactOnly: true),
-            new ColumnSpec(Subgroup, new[] { "подгруппа" }, exactOnly: true),
-            new ColumnSpec(Name, new[] { "наименование" }, exactOnly: true),
-            new ColumnSpec(Quality, new[] { "качество" }, exactOnly: true),
-            new ColumnSpec(Quantity, new[] { "количество" }, exactOnly: true),
-            new ColumnSpec(Size, new[] { "размер" }, exactOnly: true),
-            new ColumnSpec(Season, new[] { "сезон" }, exactOnly: true),
-            new ColumnSpec(Theme, new[] { "тема" }, exactOnly: true),
-            new ColumnSpec(Color, new[] { "цвет" }, exactOnly: true),
+            // Колонки данных необязательны: если их в книге нет, программа дописывает
+            // их сама перед заполнением листа. Колонки с формулами остаются обязательными.
+            new ColumnSpec(Address, new[] { "адрес" }, exactOnly: true, optional: true),
+            new ColumnSpec(Container, new[] { "тара" }, exactOnly: true, optional: true),
+            new ColumnSpec(Article, new[] { "артикул" }, exactOnly: true, optional: true),
+            new ColumnSpec(Code, new[] { "код" }, exactOnly: true, optional: true),
+            new ColumnSpec(Sector, new[] { "сектор" }, exactOnly: true, optional: true),
+            new ColumnSpec(Group, new[] { "группа" }, exactOnly: true, optional: true),
+            new ColumnSpec(Subgroup, new[] { "подгруппа" }, exactOnly: true, optional: true),
+            new ColumnSpec(Name, new[] { "наименование" }, exactOnly: true, optional: true),
+            new ColumnSpec(Quality, new[] { "качество" }, exactOnly: true, optional: true),
+            new ColumnSpec(Quantity, new[] { "количество" }, exactOnly: true, optional: true),
+            new ColumnSpec(Size, new[] { "размер" }, exactOnly: true, optional: true),
+            new ColumnSpec(Season, new[] { "сезон" }, exactOnly: true, optional: true),
+            new ColumnSpec(Theme, new[] { "тема" }, exactOnly: true, optional: true),
+            new ColumnSpec(Color, new[] { "цвет" }, exactOnly: true, optional: true),
             new ColumnSpec(ToReceive, new[] { "в приемку" }, exactOnly: true),
             new ColumnSpec(Counted, new[] { "учитывать" }, exactOnly: true),
             new ColumnSpec(AddressNumber, new[] { "номер адреса" }, exactOnly: true),
             new ColumnSpec(ContainerNumber, new[] { "номер тары" }, exactOnly: true),
+        };
+
+        /// <summary>
+        /// Все колонки листа по порядку. Тех, которых в книге нет, программа дописывает сама,
+        /// и колонка встаёт на своё место, а не приписывается справа.
+        ///
+        /// Колонки с формулами («В приемку», «Учитывать», «Номер адреса», «Номер тары») в книге
+        /// есть всегда: без них обработка останавливается раньше, потому что формулы «Учитывать»
+        /// и номеров программа не сочиняет. В списке они нужны как ориентиры: по ним понятно,
+        /// куда вставлять недостающие колонки данных.
+        /// </summary>
+        public static readonly IReadOnlyList<CreatedColumn> Created = new[]
+        {
+            new CreatedColumn(Address, Address, new[] { "адрес" }),
+            new CreatedColumn(Container, Container, new[] { "тара" }),
+            new CreatedColumn(Article, Article, new[] { "артикул" }),
+            new CreatedColumn(Code, Code, new[] { "код" }),
+            new CreatedColumn(Sector, Sector, new[] { "сектор" }),
+            new CreatedColumn(Group, Group, new[] { "группа" }),
+            new CreatedColumn(Subgroup, Subgroup, new[] { "подгруппа" }),
+            new CreatedColumn(Name, Name, new[] { "наименование" }),
+            new CreatedColumn(Quality, Quality, new[] { "качество" }),
+            new CreatedColumn(Quantity, Quantity, new[] { "количество" }),
+            new CreatedColumn(Size, Size, new[] { "размер" }),
+            new CreatedColumn(Season, Season, new[] { "сезон" }),
+            new CreatedColumn(Theme, Theme, new[] { "тема" }),
+            new CreatedColumn(Color, Color, new[] { "цвет" }),
+            new CreatedColumn(ToReceive, ToReceive, new[] { "в приемку" }),
+            new CreatedColumn(Counted, Counted, new[] { "учитывать" }),
+            new CreatedColumn(AddressNumber, AddressNumber, new[] { "номер адреса" }),
+            new CreatedColumn(ContainerNumber, ContainerNumber, new[] { "номер тары" }),
         };
     }
 
@@ -261,8 +294,8 @@ public static class ReceivingSchema
         {
             new ColumnSpec(Code, new[] { "код" }, exactOnly: true),
             new ColumnSpec(ContainerCode, new[] { "тара/код поставщика" }, exactOnly: true),
-            new ColumnSpec(SupplyNumber, new[] { "номер поставки" }, exactOnly: true),
-            new ColumnSpec(Barcode, new[] { "шк", "штрихкод" }, exactOnly: true),
+            new ColumnSpec(SupplyNumber, new[] { "номер поставки" }, exactOnly: true, optional: true),
+            new ColumnSpec(Barcode, new[] { "шк", "штрихкод" }, exactOnly: true, optional: true),
         };
     }
 

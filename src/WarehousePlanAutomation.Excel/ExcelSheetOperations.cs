@@ -792,6 +792,150 @@ internal static class ExcelSheetOperations
     }
 
     /// <summary>
+    /// Дописывает недостающие колонки в строку заголовков, сохраняя порядок списка:
+    /// пропущенная колонка вставляется перед ближайшей следующей из списка, а если такой
+    /// нет - приписывается за последним заголовком. Оформление берётся у соседнего заголовка.
+    ///
+    /// Поиск и вставка идут начиная с <paramref name="firstColumn"/>: на листах поставок
+    /// первые колонки заняты формулами, и «Код» из них нельзя спутать с «Кодом» данных.
+    /// </summary>
+    /// <returns>Названия созданных колонок в порядке создания.</returns>
+    public static IReadOnlyList<string> InsertHeaderColumns(
+        object sheetObject,
+        int headerRow,
+        IReadOnlyList<CreatedColumn> expected,
+        int firstColumn = 1)
+    {
+        var created = new List<string>();
+        var cursor = firstColumn;
+
+        for (var i = 0; i < expected.Count; i++)
+        {
+            var headers = ReadHeaderKeys(sheetObject, headerRow, firstColumn);
+
+            var found = FindHeader(headers, expected[i].Keys, firstColumn);
+            if (found > 0)
+            {
+                cursor = found + 1;
+                continue;
+            }
+
+            // Ближайшая следующая колонка списка - ориентир: перед ней место пропущенной.
+            var anchor = 0;
+            for (var next = i + 1; next < expected.Count && anchor == 0; next++)
+            {
+                anchor = FindHeader(headers, expected[next].Keys, firstColumn);
+            }
+
+            int target;
+            var inserted = false;
+            if (IsHeaderEmpty(headers, cursor) && (anchor == 0 || cursor < anchor))
+            {
+                // Колонка на листе есть, у неё только нет названия: такую подписываем,
+                // а не вставляем рядом ещё одну - иначе данные остались бы без заголовка.
+                target = cursor;
+            }
+            else if (anchor > 0)
+            {
+                target = anchor;
+                InsertColumns(sheetObject, anchor, 1);
+                inserted = true;
+            }
+            else
+            {
+                target = Math.Max(LastHeaderColumn(headers), firstColumn - 1) + 1;
+            }
+
+            CopyHeaderFormat(sheetObject, headerRow, target, headers, inserted);
+            SetValue(sheetObject, headerRow, target, expected[i].Title);
+            created.Add(expected[i].Title);
+            cursor = target + 1;
+        }
+
+        return created;
+    }
+
+    /// <summary>Нормализованные заголовки строки: индекс в списке - номер колонки минус один.</summary>
+    private static IReadOnlyList<string> ReadHeaderKeys(object sheetObject, int headerRow, int firstColumn)
+    {
+        var bounds = GetUsedBounds(sheetObject);
+        var lastColumn = Math.Max(bounds.FirstColumn + bounds.ColumnCount - 1, firstColumn);
+        var grid = ReadBlock(sheetObject, headerRow, headerRow, 1, lastColumn, withFormulas: false);
+
+        var keys = new string[lastColumn];
+        for (var column = 1; column <= lastColumn; column++)
+        {
+            keys[column - 1] = TextUtils.NormalizeKey(grid.Text(headerRow, column));
+        }
+
+        return keys;
+    }
+
+    private static int FindHeader(IReadOnlyList<string> headers, IReadOnlyList<string> keys, int firstColumn)
+    {
+        for (var column = firstColumn; column <= headers.Count; column++)
+        {
+            if (keys.Contains(headers[column - 1], StringComparer.Ordinal))
+            {
+                return column;
+            }
+        }
+
+        return 0;
+    }
+
+    /// <summary>Колонка есть, но заголовка у неё нет. За последним заголовком - тоже пусто.</summary>
+    private static bool IsHeaderEmpty(IReadOnlyList<string> headers, int column) =>
+        column > headers.Count || headers[column - 1].Length == 0;
+
+    private static int LastHeaderColumn(IReadOnlyList<string> headers)
+    {
+        for (var column = headers.Count; column >= 1; column--)
+        {
+            if (headers[column - 1].Length > 0)
+            {
+                return column;
+            }
+        }
+
+        return 0;
+    }
+
+    /// <summary>
+    /// Оформление нового заголовка берётся у соседнего: сначала слева - слева колонки
+    /// от вставки не сдвинулись. Если слева заголовков нет, берётся правый сосед: после
+    /// вставки на его месте стоит тот заголовок, перед которым вставляли.
+    /// </summary>
+    private static void CopyHeaderFormat(
+        object sheetObject, int headerRow, int column, IReadOnlyList<string> headers, bool inserted)
+    {
+        var source = 0;
+        for (var left = column - 1; left >= 1 && source == 0; left--)
+        {
+            if (left <= headers.Count && headers[left - 1].Length > 0)
+            {
+                source = left;
+            }
+        }
+
+        if (source == 0 && inserted)
+        {
+            source = column + 1;
+        }
+
+        if (source == 0)
+        {
+            return;
+        }
+
+        dynamic sheet = sheetObject;
+        using var scope = new ComScope();
+        dynamic from = scope.Track(sheet.Cells[headerRow, source]);
+        dynamic to = scope.Track(sheet.Cells[headerRow, column]);
+        from.Copy(to);
+    }
+
+    /// <summary>
     /// Вставляет колонки перед указанной. Вставка именно внутрь занятого диапазона -
     /// это то, ради чего метод существует: так Excel сам растягивает формулы вида
     /// СУММ(N21:Y21) и СУММЕСЛИ($N$27:$Y$27; …), которые охватывают все блоки сразу.

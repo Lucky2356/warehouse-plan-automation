@@ -560,6 +560,17 @@ public sealed class ExcelReceivingProcessor : IWorkbookProcessor
     {
         var name = ExcelSheetOperations.GetSheetName(sheet);
         var table = Headers(sheet, ReceivingSchema.Storage.Specs);
+
+        // Колонок данных в книге может не быть вовсе - остаются одни колонки с формулами.
+        // Программа дописывает недостающие сама, каждую на своё место.
+        var created = ExcelSheetOperations.InsertHeaderColumns(
+            sheet, table.Headers.HeaderRow, ReceivingSchema.Storage.Created);
+        if (created.Count > 0)
+        {
+            _logger.Information("На листе «" + name + "» дописаны колонки: " + string.Join(", ", created) + ".");
+            table = Headers(sheet, ReceivingSchema.Storage.Specs);
+        }
+
         var headers = table.Headers;
         var first = headers.HeaderRow + 1;
         var width = new ColumnRange(1, table.LastHeaderColumn);
@@ -573,7 +584,10 @@ public sealed class ExcelReceivingProcessor : IWorkbookProcessor
             toReceive);
 
         var template = ExcelSheetOperations.ReadBlock(sheet, first, first, 1, width.Last, withFormulas: true);
-        var hasToReceiveFormula = template.HasFormula(first, toReceive);
+        // Сломанная ссылками формула ничем не лучше отсутствующей: «Учитывать» по ней
+        // ничего не наберёт, - поэтому программа вписывает свою.
+        var hasToReceiveFormula = template.HasFormula(first, toReceive) &&
+            !IsBrokenFormula(template.Formula(first, toReceive));
         var count = selection.Rows.Count;
         var lastRow = Math.Max(first, first + count - 1);
 
@@ -809,6 +823,20 @@ public sealed class ExcelReceivingProcessor : IWorkbookProcessor
     {
         var name = ExcelSheetOperations.GetSheetName(sheet);
         var table = Headers(sheet, ReceivingSchema.Supplies.Specs);
+
+        // Колонки листа - это колонки «Непринятого товара»: если их в книге нет,
+        // программа дописывает их сама, за колонками с формулами и в том же порядке.
+        var created = ExcelSheetOperations.InsertHeaderColumns(
+            sheet,
+            table.Headers.HeaderRow,
+            source.Columns.Select(column => new CreatedColumn(column.Name, column.Name, new[] { TextUtils.NormalizeKey(column.Name) })).ToList(),
+            ReceivingSchema.Supplies.FormulaColumns + 1);
+        if (created.Count > 0)
+        {
+            _logger.Information("На листе «" + name + "» дописаны колонки: " + string.Join(", ", created) + ".");
+            table = Headers(sheet, ReceivingSchema.Supplies.Specs);
+        }
+
         var headerRow = table.Headers.HeaderRow;
         var first = headerRow + 1;
         var headerGrid = ExcelSheetOperations.ReadBlock(sheet, headerRow, headerRow, 1, table.LastHeaderColumn, withFormulas: false);
@@ -860,6 +888,19 @@ public sealed class ExcelReceivingProcessor : IWorkbookProcessor
 
         var template = ExcelSheetOperations.ReadBlock(
             sheet, first, first, 1, ReceivingSchema.Supplies.FormulaColumns, withFormulas: true);
+        var broken = Enumerable.Range(1, ReceivingSchema.Supplies.FormulaColumns)
+            .Any(column => IsBrokenFormula(template.Formula(first, column)));
+        if (broken)
+        {
+            warnings.Add(new ProcessingWarning(
+                "На листе «" + name + "» формулы «" + ReceivingSchema.Supplies.Code + "» и «" +
+                ReceivingSchema.Supplies.ContainerCode + "» в первой строке ссылаются на удалённые колонки " +
+                "(#ССЫЛКА!). Поправьте их в первой строке: «итог» по этому листу тару и номер поставки не найдёт.",
+                name + ", " + new CellRef(first, 1),
+                name,
+                new CellRef(first, 1).ToString()));
+        }
+
         if (!Enumerable.Range(1, ReceivingSchema.Supplies.FormulaColumns).All(column => template.HasFormula(first, column)))
         {
             warnings.Add(new ProcessingWarning(
@@ -1128,6 +1169,8 @@ public sealed class ExcelReceivingProcessor : IWorkbookProcessor
         var name = ExcelSheetOperations.GetSheetName(sheet);
         var table = Headers(sheet, ReceivingSchema.Storage.Specs);
         var headers = table.Headers;
+        Require(sheet, headers, ReceivingSchema.Storage.Address, ReceivingSchema.Storage.Code);
+
         var first = headers.HeaderRow + 1;
         var column = headers[ReceivingSchema.Storage.ToReceive];
         var template = ExcelSheetOperations.ReadBlock(sheet, first, first, column, column, withFormulas: true);
@@ -1179,6 +1222,13 @@ public sealed class ExcelReceivingProcessor : IWorkbookProcessor
     {
         var table = Headers(sheet, ReceivingSchema.Storage.Specs);
         var headers = table.Headers;
+        Require(
+            sheet,
+            headers,
+            ReceivingSchema.Storage.Address,
+            ReceivingSchema.Storage.Container,
+            ReceivingSchema.Storage.Code);
+
         var first = headers.HeaderRow + 1;
         var counted = headers[ReceivingSchema.Storage.Counted];
         var last = LastRow(sheet, table.Bounds, headers[ReceivingSchema.Storage.Address], headers[ReceivingSchema.Storage.Code]);
@@ -1328,6 +1378,8 @@ public sealed class ExcelReceivingProcessor : IWorkbookProcessor
     private static CollectedLookup ReadCollectedLookup(object sheet)
     {
         var table = Headers(sheet, ReceivingSchema.Supplies.Specs);
+        Require(sheet, table.Headers, ReceivingSchema.Supplies.SupplyNumber, ReceivingSchema.Supplies.Barcode);
+
         return new CollectedLookup(
             ExcelSheetOperations.GetSheetName(sheet),
             table.Headers[ReceivingSchema.Supplies.Code],
@@ -1512,6 +1564,31 @@ public sealed class ExcelReceivingProcessor : IWorkbookProcessor
 
         return new SheetTable(headers, bounds, lastHeader);
     }
+
+    /// <summary>
+    /// Колонки, без которых читать лист нечем. Они необязательны при разборе заголовков,
+    /// потому что программа дописывает их на первом этапе; на втором этапе книга должна
+    /// быть уже подготовлена, и понятное объяснение лучше, чем ошибка внутри чтения.
+    /// </summary>
+    private static void Require(object sheet, HeaderMap headers, params string[] names)
+    {
+        var missing = names.Where(name => !headers.TryGet(name, out _)).ToList();
+        if (missing.Count == 0)
+        {
+            return;
+        }
+
+        var sheetName = ExcelSheetOperations.GetSheetName(sheet);
+        throw new WorkbookValidationException(missing
+            .Select(name => "на листе «" + sheetName + "» нет колонки «" + name +
+                            "» - сначала выполните подготовку приемки")
+            .ToList());
+    }
+
+    /// <summary>Формула, потерявшая колонки, на которые ссылалась.</summary>
+    private static bool IsBrokenFormula(string? formula) =>
+        formula is not null &&
+        (formula.Contains("#REF!", StringComparison.Ordinal) || formula.Contains("#ССЫЛКА!", StringComparison.Ordinal));
 
     private static int LastRow(object sheet, SheetBounds bounds, params int[] columns) =>
         columns.Select(column => ExcelSheetOperations.GetLastFilledRow(sheet, column, bounds.LastRow)).DefaultIfEmpty(0).Max();
