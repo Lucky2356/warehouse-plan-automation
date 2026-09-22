@@ -36,6 +36,7 @@ public abstract class WorkbookTaskViewModel : NavPageViewModel
     private bool _isNavigating;
     private bool _preflightDone;
     private string _optionFolderPath;
+    private string? _selectedRunOption;
 
     private CancellationTokenSource? _cancellation;
 
@@ -141,6 +142,38 @@ public abstract class WorkbookTaskViewModel : NavPageViewModel
 
     public bool HasOptionFolder => OptionFolderPath.Length > 0;
 
+    /// <summary>
+    /// Варианты запуска задачи - например, пересчитать всё или только часть. Пусто или
+    /// один вариант - выбора нет, и в окне он не показывается. Выбор не запоминается между
+    /// запусками программы: неполный пересчёт по ошибке хуже лишнего щелчка.
+    /// </summary>
+    public virtual IReadOnlyList<string> RunOptions => Array.Empty<string>();
+
+    public virtual string RunOptionsTitle => string.Empty;
+
+    public bool HasRunOptions => RunOptions.Count > 1;
+
+    public string? SelectedRunOption
+    {
+        get => _selectedRunOption ?? RunOptions.FirstOrDefault();
+        set
+        {
+            if (IsBusy || value is null)
+            {
+                // Во время обработки выбор не меняется: обработчик уже прочитал его.
+                OnPropertyChanged();
+                return;
+            }
+
+            SetProperty(ref _selectedRunOption, value);
+            OnPropertyChanged(nameof(RunOptionHint));
+            OnPropertyChanged(nameof(ActionCaption));
+        }
+    }
+
+    /// <summary>Что сделает выбранный вариант.</summary>
+    public virtual string RunOptionHint => string.Empty;
+
     public RelayCommand SelectOptionFolderCommand { get; }
 
     public RelayCommand ClearOptionFolderCommand { get; }
@@ -241,9 +274,12 @@ public abstract class WorkbookTaskViewModel : NavPageViewModel
         private set
         {
             SetProperty(ref _isBusy, value);
+            OnPropertyChanged(nameof(IsIdle));
             RefreshCommands();
         }
     }
+
+    public bool IsIdle => !IsBusy;
 
     /// <summary>Над окном держат файл: поле выбора подсвечивается.</summary>
     public bool IsDragOver
@@ -256,6 +292,27 @@ public abstract class WorkbookTaskViewModel : NavPageViewModel
     {
         get => _progressValue;
         private set => SetProperty(ref _progressValue, value);
+    }
+
+    /// <summary>
+    /// Короткая причина сбоя для окна: тип и первая строка сообщения самой глубокой
+    /// ошибки - обёртки вроде «исключение в вызванном методе» ничего не объясняют.
+    /// </summary>
+    private static string ShortReason(Exception ex)
+    {
+        var inner = ex;
+        while (inner.InnerException is not null)
+        {
+            inner = inner.InnerException;
+        }
+
+        var message = (inner.Message ?? string.Empty).Split('\n')[0].Trim();
+        if (message.Length > 300)
+        {
+            message = message[..300] + "…";
+        }
+
+        return inner.GetType().Name + (message.Length > 0 ? ": " + message : string.Empty);
     }
 
     public void Cancel()
@@ -506,9 +563,13 @@ public abstract class WorkbookTaskViewModel : NavPageViewModel
         catch (Exception ex)
         {
             _logger.Error("Непредвиденная ошибка обработки файла.", ex);
+
+            // Причина видна прямо в окне: журнал лежит на рабочем компьютере и к вечеру
+            // очищается, а строку из окна легко переслать снимком экрана.
             ErrorMessage =
-                FailureMessage + " Подробности записаны в журнал:" + Environment.NewLine +
-                FileAppLogger.DefaultDirectory();
+                FailureMessage + Environment.NewLine +
+                "Причина: " + ShortReason(ex) + Environment.NewLine +
+                "Подробности записаны в журнал: " + FileAppLogger.DefaultDirectory();
             StatusMessage = "Обработка не выполнена.";
             ProgressValue = 0;
         }

@@ -27,6 +27,18 @@ internal static class ExcelPictures
     /// <summary>Тип фигуры «картинка» (msoPicture).</summary>
     private const int MsoPicture = 13;
 
+    /// <summary>
+    /// Картинка, связанная с файлом (msoLinkedPicture). Так ложатся фотографии, которые
+    /// вставлены макросом по ссылке, - для программы это такая же фотография товара.
+    /// </summary>
+    private const int MsoLinkedPicture = 11;
+
+    private static bool IsPicture(dynamic shape)
+    {
+        int type = shape.Type;
+        return type is MsoPicture or MsoLinkedPicture;
+    }
+
     /// <summary>Картинка двигается вместе с ячейками, но не растягивается (xlMove).</summary>
     private const int XlMove = 2;
 
@@ -45,7 +57,7 @@ internal static class ExcelPictures
         for (var index = 1; index <= count; index++)
         {
             dynamic shape = scope.Track(shapes.Item(index));
-            if ((int)shape.Type != MsoPicture)
+            if (!IsPicture(shape))
             {
                 continue;
             }
@@ -64,8 +76,18 @@ internal static class ExcelPictures
     }
 
     /// <summary>Удаляет картинки, привязанные внутри прямоугольника. Возвращает, сколько удалено.</summary>
-    public static int DeleteIn(object sheetObject, SheetArea area)
+    /// <param name="overlapping">
+    /// Удалять и картинки, которые только заходят в прямоугольник, а привязаны за ним:
+    /// в заголовках блоков «Распреда» фотография, сдвинутая на строку-другую, всё равно
+    /// лежит под новой и должна уйти.
+    /// </param>
+    public static int DeleteIn(object sheetObject, SheetArea area, bool overlapping = false)
     {
+        if (overlapping)
+        {
+            return DeleteOverlapping(sheetObject, area);
+        }
+
         dynamic sheet = sheetObject;
         var deleted = 0;
 
@@ -77,7 +99,7 @@ internal static class ExcelPictures
         for (var index = count; index >= 1; index--)
         {
             dynamic shape = scope.Track(shapes.Item(index));
-            if ((int)shape.Type != MsoPicture)
+            if (!IsPicture(shape))
             {
                 continue;
             }
@@ -95,9 +117,53 @@ internal static class ExcelPictures
         return deleted;
     }
 
+    private static int DeleteOverlapping(object sheetObject, SheetArea area)
+    {
+        dynamic sheet = sheetObject;
+        var deleted = 0;
+
+        using var scope = new ComScope();
+        dynamic shapes = scope.Track(sheet.Shapes);
+        int count = shapes.Count;
+
+        for (var index = count; index >= 1; index--)
+        {
+            dynamic shape = scope.Track(shapes.Item(index));
+            if (!IsPicture(shape))
+            {
+                continue;
+            }
+
+            dynamic topLeft = scope.Track(shape.TopLeftCell);
+            dynamic bottomRight = scope.Track(shape.BottomRightCell);
+            int top = topLeft.Row;
+            int left = topLeft.Column;
+            int bottom = bottomRight.Row;
+            int right = bottomRight.Column;
+
+            var intersects = top <= area.LastRow && bottom >= area.FirstRow &&
+                             left <= area.LastColumn && right >= area.FirstColumn;
+            if (!intersects)
+            {
+                continue;
+            }
+
+            shape.Delete();
+            deleted++;
+        }
+
+        return deleted;
+    }
+
     /// <summary>
     /// Копирует картинку на другой лист и ставит её в ячейку, вписывая в заданную рамку
     /// с сохранением пропорций. Возвращает false, если Excel вставку не выполнил.
+    ///
+    /// Буфер обмена общий на весь компьютер, и на рабочем месте им пользуются все: открытый
+    /// рядом Excel, мессенджеры, удалённый рабочий стол. Если копирование не дошло до буфера,
+    /// вставка берёт то, что в нём лежало раньше, - и во всех блоках оказывается одна и та же
+    /// чужая фотография. Поэтому буфер перед копированием очищается, после копирования
+    /// проверяется, что в нём наше, а вставленная картинка сверяется по размеру с исходной.
     /// </summary>
     /// <param name="bottomRight">
     /// Прижать картинку к правому нижнему углу ячейки и не выпускать за её ширину:
@@ -119,8 +185,11 @@ internal static class ExcelPictures
         dynamic shape = shapeObject;
         dynamic target = targetSheetObject;
 
-        // Буфер обмена в Windows общий: если его в эту долю секунды занял другой процесс,
-        // вставка не удаётся. Такая ошибка проходит сама, поэтому перенос повторяется.
+        double sourceWidth = shape.Width;
+        double sourceHeight = shape.Height;
+
+        // Если буфер в эту долю секунды занял другой процесс, перенос не удаётся.
+        // Такая ошибка проходит сама, поэтому перенос повторяется.
         for (var attempt = 1; attempt <= PasteAttempts; attempt++)
         {
             try
@@ -129,10 +198,28 @@ internal static class ExcelPictures
                 dynamic shapes = scope.Track(target.Shapes);
                 int before = shapes.Count;
 
+                Clipboard.Clear();
+                var cleared = Clipboard.Sequence();
                 shape.Copy();
+                var copied = Clipboard.Sequence();
+                if (copied == cleared)
+                {
+                    logger.Warning("Картинка для строки " + row + " не скопировалась в буфер, попытка " + attempt + ".");
+                    Thread.Sleep(PasteRetryDelayMs);
+                    continue;
+                }
+
                 target.Activate();
                 dynamic anchor = scope.Track(target.Cells[row, column]);
                 anchor.Select();
+
+                if (Clipboard.Sequence() != copied)
+                {
+                    logger.Warning("Буфер обмена перехватил другой процесс, строка " + row + ", попытка " + attempt + ".");
+                    Thread.Sleep(PasteRetryDelayMs);
+                    continue;
+                }
+
                 target.Paste();
                 application.CutCopyMode = false;
 
@@ -144,6 +231,21 @@ internal static class ExcelPictures
                 }
 
                 dynamic pasted = scope.Track(shapes.Item(shapes.Count));
+
+                // Вставленная копия выходит того же размера, что исходная картинка.
+                // Другой размер значит, что вставилось чужое содержимое буфера.
+                double pastedWidth = pasted.Width;
+                double pastedHeight = pasted.Height;
+                if (!SameSize(sourceWidth, sourceHeight, pastedWidth, pastedHeight))
+                {
+                    logger.Warning(
+                        "В строку " + row + " вставилась не та картинка (" + pastedWidth.ToString("0.#") + "x" +
+                        pastedHeight.ToString("0.#") + " вместо " + sourceWidth.ToString("0.#") + "x" +
+                        sourceHeight.ToString("0.#") + "), попытка " + attempt + ".");
+                    pasted.Delete();
+                    Thread.Sleep(PasteRetryDelayMs);
+                    continue;
+                }
                 double cellWidth = anchor.Width;
                 double cellHeight = anchor.Height;
                 Fit(pasted, bottomRight ? Math.Min(maxWidth, cellWidth) : maxWidth, maxHeight, fillFrame);
@@ -172,7 +274,58 @@ internal static class ExcelPictures
         return false;
     }
 
-    private const int PasteAttempts = 3;
+    private const int PasteAttempts = 5;
+
+    /// <summary>Размеры совпадают с точностью до округления Excel: 2 % или 1 пункт.</summary>
+    private static bool SameSize(double width, double height, double otherWidth, double otherHeight)
+    {
+        static bool Near(double a, double b) => Math.Abs(a - b) <= Math.Max(1d, Math.Abs(a) * 0.02);
+        return Near(width, otherWidth) && Near(height, otherHeight);
+    }
+
+    /// <summary>
+    /// Буфер обмена Windows напрямую: очистить и узнать номер его содержимого.
+    /// Номер меняется при каждой записи в буфер - по нему видно, дошло ли копирование.
+    /// </summary>
+    private static class Clipboard
+    {
+        [DllImport("user32.dll")]
+        private static extern uint GetClipboardSequenceNumber();
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern bool OpenClipboard(IntPtr owner);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern bool EmptyClipboard();
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern bool CloseClipboard();
+
+        public static uint Sequence() => GetClipboardSequenceNumber();
+
+        /// <summary>Очищает буфер. Если он занят, не страшно: проверка номера всё равно поймает сбой.</summary>
+        public static void Clear()
+        {
+            for (var attempt = 0; attempt < 5; attempt++)
+            {
+                if (OpenClipboard(IntPtr.Zero))
+                {
+                    try
+                    {
+                        EmptyClipboard();
+                    }
+                    finally
+                    {
+                        CloseClipboard();
+                    }
+
+                    return;
+                }
+
+                Thread.Sleep(50);
+            }
+        }
+    }
 
     private const int PasteRetryDelayMs = 300;
 

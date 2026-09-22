@@ -26,6 +26,25 @@ public enum PriceStage
     Recalculate,
 }
 
+/// <summary>Что пересчитывает второй этап распреда.</summary>
+public enum RecalculateScope
+{
+    /// <summary>Весь файл: наценки, аналоги, цены, проверки, «остатки», «Распред», «Загрузочник».</summary>
+    All,
+
+    /// <summary>
+    /// Только сверка с листом «link»: «Линк», «Проверка запретов» и подсветка на «Цены».
+    /// Нужна, когда обновили лист «link», а остальное уже посчитано.
+    /// </summary>
+    Link,
+
+    /// <summary>
+    /// Только остатки: лист «остатки» заново из «Остатков Н», ссылки «Распреда» на него
+    /// и «мин запас на Хаб» по свежим остаткам. Блоки и загрузочник не трогаются.
+    /// </summary>
+    Stock,
+}
+
 /// <summary>
 /// Книга распреда. Работа разделена на два этапа, потому что между ними человек делает
 /// то, чего программа сделать не может: протягивает колонки со стенками из файлов
@@ -63,23 +82,27 @@ public sealed class ExcelPriceSheetProcessor : IWorkbookProcessor
     private readonly PriceStage _stage;
     private readonly Func<DateTime> _nowProvider;
     private readonly Func<string?> _approvedPricesFolder;
+    private readonly Func<RecalculateScope> _scope;
 
     /// <param name="approvedPricesFolder">
     /// Папка с файлами согласования цен. Спрашивается в момент запуска: человек мог выбрать
     /// её уже после того, как окно открылось. Пусто - «Согласованные цены» протягивает человек.
     /// </param>
+    /// <param name="scope">Что пересчитывать на втором этапе. Спрашивается в момент запуска.</param>
     public ExcelPriceSheetProcessor(
         IAppLogger logger,
         IDecisionPrompt? prompt = null,
         PriceStage stage = PriceStage.Prepare,
         Func<DateTime>? nowProvider = null,
-        Func<string?>? approvedPricesFolder = null)
+        Func<string?>? approvedPricesFolder = null,
+        Func<RecalculateScope>? scope = null)
     {
         _logger = logger;
         _prompt = prompt;
         _stage = stage;
         _nowProvider = nowProvider ?? (() => DateTime.Now);
         _approvedPricesFolder = approvedPricesFolder ?? (() => null);
+        _scope = scope ?? (() => RecalculateScope.All);
     }
 
     public Task<ProcessingResult> ProcessAsync(
@@ -158,7 +181,12 @@ public sealed class ExcelPriceSheetProcessor : IWorkbookProcessor
 
             var outcome = _stage == PriceStage.Prepare
                 ? Prepare(applicationObject, sheets, path, sourcePath, progress, cancellationToken)
-                : Recalculate(applicationObject, sheets, path, progress, cancellationToken);
+                : _scope() switch
+                {
+                    RecalculateScope.Link => RecalculateLink(applicationObject, sheets, path, progress),
+                    RecalculateScope.Stock => RecalculateStock(applicationObject, sheets, path, progress),
+                    _ => Recalculate(applicationObject, sheets, path, progress, cancellationToken),
+                };
 
             Report(progress, "Сохранение файла", 96);
             workbook.Save();
@@ -225,6 +253,7 @@ public sealed class ExcelPriceSheetProcessor : IWorkbookProcessor
                 .Select(line => line.Barcode)
                 .ToHashSet(StringComparer.Ordinal);
 
+            MoveSummaryBarcodeFirst(sheets.SummaryPrice);
             var priceList = ReadSummaryPrice(sheets.SummaryPrice, barcodes);
             var codes = priceList.Values
                 .Select(row => row.Code)
@@ -457,6 +486,110 @@ public sealed class ExcelPriceSheetProcessor : IWorkbookProcessor
             path, rows, checks, markups, distribution, loader, analogues, approved, extraWarnings);
     }
 
+    /// <summary>
+    /// Пересчёт только сверки с листом «link»: «Линк», «Проверка запретов», подсветка
+    /// и повторы штрихкодов на листе «Цены». Наценки, цены и остальные листы не трогаются.
+    /// </summary>
+    private ProcessingResult RecalculateLink(
+        object applicationObject,
+        PriceSheets sheets,
+        string path,
+        IProgress<ProcessingStage>? progress)
+    {
+        dynamic application = applicationObject;
+        _logger.Information("Пересчитывается только сверка с листом «link».");
+
+        Report(progress, "Чтение листа «Цены»", 12);
+        ExcelSheetOperations.ShowAllRows(sheets.Prices);
+        var layout = ReadPricesLayout(sheets.Prices);
+        var rows = RequireRows(ReadPriceRows(sheets.Prices, layout));
+
+        Report(progress, "Пересчёт формул", 30);
+        application.Calculation = ExcelConstants.XlCalculationAutomatic;
+        application.CalculateFull();
+
+        Report(progress, "Сверка с листом «link»", 60);
+        var states = ReadRowStates(sheets.Prices, layout, rows);
+        var links = ReadLink(
+            sheets.Link,
+            states.Select(s => TextUtils.NormalizeKey(s.Acr)).ToHashSet(StringComparer.Ordinal));
+        var checks = RunChecks(rows, states, links);
+        ApplyChecks(sheets.Prices, layout, checks);
+        MarkDuplicateBarcodes(sheets.Prices, layout, rows);
+        checks = Locate(sheets.Prices, layout, checks);
+
+        Report(progress, "Пересчёт формул", 88);
+        application.CalculateFull();
+
+        var missingLink = checks.Count(check => check.LinkValue == PriceChecks.LinkMissing);
+        var highlighted = checks.Sum(check => check.Highlight.Count);
+
+        return new ProcessingResult(
+            path,
+            new List<ProcessingCounter>
+            {
+                new("строк «Цены»", rows.Count),
+                new("нет в Линке", missingLink, missingLink > 0),
+                new("подсвечено ячеек", highlighted, highlighted > 0),
+            },
+            checks.SelectMany(check => check.Warnings).ToList());
+    }
+
+    /// <summary>
+    /// Пересчёт только остатков: лист «остатки» из свежих «Остатков Н», ссылки «Распреда»
+    /// на него, «мин запас на Хаб» по правилу 30 %, сортировка РТТ и проверка загрузочника.
+    /// Наценки, проверки, блоки, фотографии и сезонность остаются как есть.
+    /// </summary>
+    private ProcessingResult RecalculateStock(
+        object applicationObject,
+        PriceSheets sheets,
+        string path,
+        IProgress<ProcessingStage>? progress)
+    {
+        dynamic application = applicationObject;
+        _logger.Information("Пересчитываются только остатки.");
+
+        Report(progress, "Чтение листа «Цены»", 12);
+        ExcelSheetOperations.ShowAllRows(sheets.Prices);
+        var layout = ReadPricesLayout(sheets.Prices);
+        var rows = RequireRows(ReadPriceRows(sheets.Prices, layout));
+
+        Report(progress, "Заполнение листа «остатки»", 40);
+        var stage = new ExcelDistributionStage(_logger, _nowProvider);
+        var distribution = stage.RunStockOnly(sheets.StockSource, sheets.Stock, sheets.Distribution, rows);
+
+        Report(progress, "Пересчёт распределения", 70);
+        application.Calculation = ExcelConstants.XlCalculationAutomatic;
+        application.CalculateFull();
+        distribution = stage.Finish(sheets.Distribution, distribution, () => application.CalculateFull());
+        application.CalculateFull();
+
+        var loader = new ExcelLoaderStage(_logger).Verify(
+            sheets.Loader, new LoaderOutcome(0, null, Array.Empty<ProcessingWarning>()));
+
+        return new ProcessingResult(
+            path,
+            new List<ProcessingCounter>
+            {
+                new("АЦР в остатках", distribution.StockColumns),
+                new("блоков «Распред»", distribution.Blocks),
+                new("обнулено «мин запас на Хаб»", distribution.ZeroedHubMinimums),
+            },
+            distribution.Warnings.Concat(loader.Warnings).ToList());
+    }
+
+    private static IReadOnlyList<PriceRowValues> RequireRows(IReadOnlyList<PriceRowValues> rows)
+    {
+        if (rows.Count == 0)
+        {
+            throw new WarehousePlanException(
+                "На листе «" + PriceSchema.PricesSheet + "» нет ни одной строки со штрихкодом. " +
+                "Сначала выполните подготовку распреда.");
+        }
+
+        return rows;
+    }
+
     private static ProcessingResult BuildRecalculateResult(
         string path,
         IReadOnlyList<PriceRowValues> rows,
@@ -658,6 +791,42 @@ public sealed class ExcelPriceSheetProcessor : IWorkbookProcessor
             ExcelSheetOperations.ReadGrid(sheet, withFormulas: false),
             ExcelSheetOperations.GetSheetName(sheet),
             fileName);
+
+    /// <summary>
+    /// Колонка «Штрихкод» на «Сводном прайсе» выносится в начало листа - как по инструкции
+    /// перед заполнением «Цен»: по ней ищут ВПР, а ВПР ищет только в первой колонке диапазона.
+    ///
+    /// Перенос без буфера обмена: в начало вставляется пустая колонка, «Штрихкод» переезжает
+    /// в неё вырезанием с указанным местом, опустевшая колонка удаляется. Ссылки на перенесённые
+    /// ячейки при вырезании идут за ними, как при ручном «Вырезать - Вставить вырезанные ячейки».
+    /// </summary>
+    private void MoveSummaryBarcodeFirst(object sheet)
+    {
+        var bounds = ExcelSheetOperations.GetUsedBounds(sheet);
+        var headerGrid = ExcelSheetOperations.ReadBlock(
+            sheet,
+            bounds.FirstRow,
+            Math.Min(bounds.FirstRow + HeaderScanRows - 1, bounds.LastRow),
+            1,
+            bounds.LastColumn,
+            withFormulas: false);
+
+        var headers = PriceListReader.ResolveSummaryHeaders(headerGrid);
+        var column = headers[PriceSchema.SummaryPrice.Barcode];
+        if (column == 1)
+        {
+            return;
+        }
+
+        ExcelSheetOperations.InsertColumns(sheet, 1, 1);
+        ExcelSheetOperations.MoveColumn(sheet, column + 1, 1);
+        ExcelSheetOperations.DeleteColumns(sheet, column + 1, 1);
+
+        var moved = TextUtils.Normalize(ExcelSheetOperations.GetValue(sheet, headers.HeaderRow, 1)?.ToString());
+        _logger.Information(
+            "На листе «" + PriceSchema.SummaryPriceSheet + "» колонка «" + moved + "» вынесена в начало из колонки " +
+            ExcelColumn.ToLetters(column) + ".");
+    }
 
     /// <summary>
     /// «Сводный прайс» - сотни тысяч строк, из которых нужны единицы. Лист читается

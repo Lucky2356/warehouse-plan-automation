@@ -2,6 +2,7 @@ using WarehousePlanAutomation.Core.Abstractions;
 using WarehousePlanAutomation.App.Infrastructure;
 using WarehousePlanAutomation.Core.Logging;
 using WarehousePlanAutomation.Core.Sheets;
+using WarehousePlanAutomation.Excel;
 
 namespace WarehousePlanAutomation.App.ViewModels;
 
@@ -64,14 +65,53 @@ public sealed class DistributionTaskViewModel : WorkbookTaskViewModel
         "M12.8,16.6 L12.8,8.8 " +
         "M16.5,16.6 L16.5,4.2";
 
-    public override string ActionCaption => "Пересчитать распред";
+    private const string AllOption = "Весь файл";
+    private const string LinkOption = "Только link";
+    private const string StockOption = "Только остатки";
+
+    public override IReadOnlyList<string> RunOptions { get; } = new[] { AllOption, LinkOption, StockOption };
+
+    public override string RunOptionsTitle => "ЧТО ПЕРЕСЧИТАТЬ";
+
+    public override string RunOptionHint => Scope switch
+    {
+        RecalculateScope.Link =>
+            "Обновили лист «link» - программа заново сверит с ним «Цены»: «Линк», «Проверка запретов», " +
+            "даты и грейды, подсветка. Наценки, цены, «остатки», «Распред» и «Загрузочник» не трогаются.",
+        RecalculateScope.Stock =>
+            "Обновили «Остатки Н» - программа заново соберёт лист «остатки», переставит на него ссылки " +
+            "«Распреда» и проверит «мин запас на Хаб» по свежим остаткам. Блоки, фотографии и «Цены» не трогаются.",
+        _ =>
+            "Наценки, аналоги, согласованные цены, проверки по стенкам и «link», листы «остатки», " +
+            "«Распред» и «Загрузочник».",
+    };
+
+    /// <summary>Что пересчитывать. Обработчик читает это в момент запуска.</summary>
+    public RecalculateScope Scope => SelectedRunOption switch
+    {
+        LinkOption => RecalculateScope.Link,
+        StockOption => RecalculateScope.Stock,
+        _ => RecalculateScope.All,
+    };
+
+    public override string ActionCaption => Scope switch
+    {
+        RecalculateScope.Link => "Пересчитать link",
+        RecalculateScope.Stock => "Пересчитать остатки",
+        _ => "Пересчитать распред",
+    };
 
     public override string InitialHint =>
         "Выберите файл после подготовки - тот, в котором вы уже протянули колонки со стенками. " +
         "Понадобятся свежие листы «link», «Остатки Н», «КС», «Аналоги» и «Регламент наценок». " +
         "Листы книги программа не удаляет.";
 
-    public override string SuccessMessage => "Распред пересчитан";
+    public override string SuccessMessage => Scope switch
+    {
+        RecalculateScope.Link => "Сверка с «link» пересчитана",
+        RecalculateScope.Stock => "Остатки пересчитаны",
+        _ => "Распред пересчитан",
+    };
 
     public override string FailureMessage => "Не удалось пересчитать распред.";
 }

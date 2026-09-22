@@ -75,6 +75,10 @@ internal sealed class ExcelDistributionStage
         layout = ReadLayout(distributionSheet).WithBlockCount(blocks);
 
         RetargetStockReferences(distributionSheet, layout, stock);
+
+        // Первый блок - образец для остальных. Если в прошлый раз у него обнулили
+        // «мин запас на Хаб», ноль разошёлся бы по всем блокам; формула возвращается до копирования.
+        RestoreHubMinimums(distributionSheet, layout);
         CopyFirstBlock(application, distributionSheet, layout);
         CopyPhotos(
             application, distributionSheet, layout, pricesSheet, pricesFirstRow, pricesColumns,
@@ -90,6 +94,79 @@ internal sealed class ExcelDistributionStage
         WriteSeasonality(distributionSheet, layout, seasonalitySheet, priceRows, sector, warnings);
 
         return new DistributionOutcome(stock.ColumnCount, blocks, 0, warnings);
+    }
+
+    /// <summary>
+    /// Пересчёт только остатков: лист «остатки» собирается заново из «Остатков Н»,
+    /// ссылки «Распреда» на его последнюю колонку переставляются. Блоки, фотографии,
+    /// сезонность и «Загрузочник» не трогаются. «Мин запас на Хаб» возвращается к общей
+    /// настройке, чтобы правило 30 % проверилось заново по свежим остаткам: это делает
+    /// <see cref="Finish"/> после пересчёта формул.
+    /// </summary>
+    public DistributionOutcome RunStockOnly(
+        object stockSourceSheet,
+        object stockSheet,
+        object distributionSheet,
+        IReadOnlyList<PriceRowValues> priceRows)
+    {
+        var warnings = new List<ProcessingWarning>();
+
+        var sector = ResolveSector(priceRows, warnings);
+        var stock = BuildStock(stockSourceSheet, sector, warnings);
+        WriteStockSheet(stockSheet, stock);
+
+        var layout = ReadLayout(distributionSheet);
+        RetargetStockReferences(distributionSheet, layout, stock);
+        RestoreHubMinimums(distributionSheet, layout);
+
+        return new DistributionOutcome(stock.ColumnCount, layout.BlockCount, 0, warnings);
+    }
+
+    /// <summary>
+    /// Возвращает «мин запас на Хаб» к общей настройке там, где его раньше обнулила программа.
+    /// Формула берётся у блока, где она сохранилась (=$L$6 - ссылка абсолютная, годится
+    /// для любого блока). Меняются только нули: другое число вписал человек, его не трогаем.
+    /// </summary>
+    private void RestoreHubMinimums(object sheet, DistributionLayout layout)
+    {
+        if (layout.BlockCount == 0)
+        {
+            return;
+        }
+
+        var columns = Enumerable.Range(0, layout.BlockCount).Select(layout.BlockColumn).ToList();
+        var formulas = columns
+            .Select(column => ExcelSheetOperations.GetFormula(sheet, layout.HubMinimumRow, column))
+            .ToList();
+
+        var template = formulas.FirstOrDefault(formula => formula is not null && formula.StartsWith('='));
+        if (template is null)
+        {
+            return;
+        }
+
+        var restored = 0;
+        for (var i = 0; i < columns.Count; i++)
+        {
+            if (formulas[i] is { } formula && formula.StartsWith('='))
+            {
+                continue;
+            }
+
+            var value = TextUtils.CellToDouble(ExcelSheetOperations.GetValue(sheet, layout.HubMinimumRow, columns[i]));
+            if (value is not 0d)
+            {
+                continue;
+            }
+
+            ExcelSheetOperations.SetFormula(sheet, layout.HubMinimumRow, columns[i], template);
+            restored++;
+        }
+
+        if (restored > 0)
+        {
+            _logger.Information("«Мин запас на Хаб» возвращён к общей настройке в " + restored + " блок(ах): " + template + ".");
+        }
     }
 
     /// <summary>
@@ -672,7 +749,8 @@ internal sealed class ExcelDistributionStage
                 1,
                 layout.HeaderRow - 1,
                 layout.FirstBlockColumn,
-                layout.BlockColumn(layout.BlockCount - 1) + PriceSchema.Distribution.BlockWidth - 1));
+                layout.BlockColumn(layout.BlockCount - 1) + PriceSchema.Distribution.BlockWidth - 1),
+            overlapping: true);
 
         if (photos.Count == 0)
         {

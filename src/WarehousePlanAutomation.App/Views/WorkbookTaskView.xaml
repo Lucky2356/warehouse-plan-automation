@@ -273,6 +273,36 @@
                                Margin="0,8,0,0"
                                Text="{Binding FolderOptionHint}" />
                 </StackPanel>
+
+                <!--
+                    Варианты запуска - есть не у всех задач. Стоят рядом с кнопкой запуска
+                    по смыслу: выбор меняет и её надпись, и то, что будет сделано.
+                -->
+                <StackPanel Margin="0,16,0,0"
+                            Visibility="{Binding HasRunOptions, Converter={StaticResource BoolToVisibility}}">
+                    <TextBlock Style="{StaticResource SectionLabelText}" Text="{Binding RunOptionsTitle}" />
+                    <ListBox Margin="0,10,0,0"
+                             Style="{StaticResource OptionList}"
+                             ItemsSource="{Binding RunOptions}"
+                             SelectedItem="{Binding SelectedRunOption, Mode=TwoWay}"
+                             IsEnabled="{Binding IsIdle}"
+                             AutomationProperties.Name="{Binding RunOptionsTitle}">
+                        <ListBox.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <UniformGrid Rows="1" />
+                            </ItemsPanelTemplate>
+                        </ListBox.ItemsPanel>
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <TextBlock Style="{StaticResource OptionText}" Text="{Binding}" />
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                    <TextBlock Style="{StaticResource CaptionText}"
+                               Margin="0,8,0,0"
+                               TextWrapping="Wrap"
+                               Text="{Binding RunOptionHint}" />
+                </StackPanel>
             </StackPanel>
         </Border>
 

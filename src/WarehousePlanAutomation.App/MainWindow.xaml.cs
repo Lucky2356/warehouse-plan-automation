@@ -28,19 +28,25 @@ public partial class MainWindow : Window
 
         _updates = new GitHubUpdateSource(logger, RepositoryOwner, RepositoryName);
 
+        // Обработчик спрашивает, что пересчитывать, в момент запуска - у страницы задачи,
+        // которая создаётся следующей строкой; к запуску она уже есть.
+        DistributionTaskViewModel? distribution = null;
+        distribution = new DistributionTaskViewModel(
+            new ExcelPriceSheetProcessor(
+                logger,
+                prompt,
+                PriceStage.Recalculate,
+                approvedPricesFolder: () => settings.Get(DistributionTaskViewModel.ApprovedPricesFolderKey),
+                scope: () => distribution?.Scope ?? RecalculateScope.All),
+            logger,
+            settings);
+
         var tasks = new WorkbookTaskViewModel[]
         {
             new PlanTaskViewModel(new ExcelWorkbookProcessor(logger), logger, settings),
             new PriceTaskViewModel(
                 new ExcelPriceSheetProcessor(logger, prompt, PriceStage.Prepare), logger, settings),
-            new DistributionTaskViewModel(
-                new ExcelPriceSheetProcessor(
-                    logger,
-                    prompt,
-                    PriceStage.Recalculate,
-                    approvedPricesFolder: () => settings.Get(DistributionTaskViewModel.ApprovedPricesFolderKey)),
-                logger,
-                settings),
+            distribution,
             new RestockTaskViewModel(new ExcelRestockProcessor(logger), logger, settings),
             new ReceivingPrepareTaskViewModel(
                 new ExcelReceivingProcessor(logger, ReceivingStage.Prepare), logger, settings),

@@ -954,6 +954,19 @@ internal static class ExcelSheetOperations
         columns.Insert(ExcelConstants.XlToRight);
     }
 
+    /// <summary>
+    /// Переносит колонку целиком на место другой, пустой колонки - вырезанием с указанным
+    /// местом назначения, без буфера обмена. Ссылки на перенесённые ячейки идут за ними.
+    /// </summary>
+    public static void MoveColumn(object sheetObject, int fromColumn, int toColumn)
+    {
+        dynamic sheet = sheetObject;
+        using var scope = new ComScope();
+        dynamic source = scope.Track(sheet.Range[ExcelColumn.ToLetters(fromColumn) + ":" + ExcelColumn.ToLetters(fromColumn)]);
+        dynamic target = scope.Track(sheet.Range[ExcelColumn.ToLetters(toColumn) + ":" + ExcelColumn.ToLetters(toColumn)]);
+        source.Cut(target);
+    }
+
     public static void DeleteColumns(object sheetObject, int firstColumn, int count)
     {
         if (count <= 0)
