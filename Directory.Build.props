@@ -10,7 +10,7 @@
     <NeutralLanguage>ru-RU</NeutralLanguage>
     <Company>WarehousePlanAutomation</Company>
     <Product>Формирование плана склада</Product>
-    <Version>1.24.1</Version>
+    <Version>1.25.0</Version>
   </PropertyGroup>
 
 </Project>

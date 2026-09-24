@@ -21,12 +21,17 @@
         </Style>
     </UserControl.Resources>
 
-    <Grid Margin="32,26,32,26">
+    <!-- Страница прокручивается целиком: в невысоком окне кнопки иначе не достать -->
+    <ScrollViewer VerticalScrollBarVisibility="Auto"
+                  HorizontalScrollBarVisibility="Disabled"
+                  Focusable="False"
+                  PanningMode="VerticalOnly">
+    <Grid Margin="32,26,28,26">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
-            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
@@ -149,4 +154,5 @@
                        Text="{Binding CurrentVersion, StringFormat=Установлена версия {0}}" />
         </Grid>
     </Grid>
+    </ScrollViewer>
 </UserControl>

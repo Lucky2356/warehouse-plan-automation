@@ -13,8 +13,6 @@ public class StoragePlacesTests
     [InlineData("Хранилище", StoragePlace.Storage)]
     [InlineData("Возвраты", StoragePlace.Returns)]
     [InlineData("Времянка", StoragePlace.Returns)]
-    [InlineData("ОЛД", StoragePlace.Returns)]
-    [InlineData("Олды", StoragePlace.Returns)]
     public void ТипХранения(string type, StoragePlace expected) =>
         Assert.Equal(expected, StoragePlaces.FromStorageType(type));
 
@@ -22,6 +20,8 @@ public class StoragePlacesTests
     [InlineData("Образцы")]
     [InlineData("Брак уценка")]
     [InlineData("Нет Маркировки")]
+    [InlineData("ОЛД")]
+    [InlineData("Олды")]
     [InlineData("")]
     public void ТипыНеДляПодтоварки(string type) => Assert.Null(StoragePlaces.FromStorageType(type));
 
@@ -194,41 +194,52 @@ public class StorageAllocatorTests
 public class PickListBuilderTests
 {
     [Fact]
-    public void ПервыйКод_Хватает()
+    public void НаименьшийКод_Хватает()
     {
+        // Код с меньшим номером идёт первым, даже если на листе он стоит ниже.
         var lines = PickListBuilder.Build(
-            0, StoragePlace.Marketplace, 5, new[] { new StockCode("154189", 10, ""), new StockCode("1", 30, "") });
+            0, StoragePlace.Marketplace, 5, new[] { new StockCode("154189", 10, ""), new StockCode("151001", 30, "") });
 
         var line = Assert.Single(lines);
-        Assert.Equal("154189", line.Code);
+        Assert.Equal("151001", line.Code);
         Assert.Equal(PickMark.None, line.Mark);
     }
 
     [Fact]
-    public void ДругойКод_ГдеХватает_Голубой()
+    public void СледующийКод_ГдеХватает_Голубой()
     {
-        // «хотели взять 5, на первом коде 1, есть коды с 3, 1 и 30 - берём код, где 30».
+        // На наименьшем коде 1 шт., дальше по возрастанию - 30 и 3; берём ближайший,
+        // на котором хватает пяти, а не самый большой.
         var lines = PickListBuilder.Build(
             0, StoragePlace.Storage, 5,
-            new[] { new StockCode("a", 1, ""), new StockCode("b", 3, ""), new StockCode("c", 30, "") });
+            new[] { new StockCode("154003", 3, ""), new StockCode("154001", 1, ""), new StockCode("154002", 30, "") });
 
         var line = Assert.Single(lines);
-        Assert.Equal("c", line.Code);
+        Assert.Equal("154002", line.Code);
         Assert.Equal(PickMark.ReplacedCode, line.Mark);
     }
 
     [Fact]
     public void НесколькоКодов_Зелёные()
     {
-        // «на одном коде 4 шт, на другом 1 шт» - строка размножается.
+        // «на одном коде 4 шт, на другом 1 шт» - строка размножается, коды по возрастанию.
         var lines = PickListBuilder.Build(
-            0, StoragePlace.Returns, 5, new[] { new StockCode("a", 1, ""), new StockCode("b", 4, "") });
+            0, StoragePlace.Returns, 5, new[] { new StockCode("154002", 4, ""), new StockCode("154001", 1, "") });
 
         Assert.Equal(2, lines.Count);
         Assert.All(lines, line => Assert.Equal(PickMark.SplitCode, line.Mark));
-        Assert.Equal(("b", 4d), (lines[0].Code, lines[0].Quantity));
-        Assert.Equal(("a", 1d), (lines[1].Code, lines[1].Quantity));
+        Assert.Equal(("154001", 1d), (lines[0].Code, lines[0].Quantity));
+        Assert.Equal(("154002", 4d), (lines[1].Code, lines[1].Quantity));
         Assert.All(lines, line => Assert.Equal(0d, line.Shortage));
+    }
+
+    [Fact]
+    public void НечисловойКод_УходитВКонец()
+    {
+        var lines = PickListBuilder.Build(
+            0, StoragePlace.Storage, 5, new[] { new StockCode("б/н", 30, ""), new StockCode("154001", 10, "") });
+
+        Assert.Equal("154001", Assert.Single(lines).Code);
     }
 
     [Fact]

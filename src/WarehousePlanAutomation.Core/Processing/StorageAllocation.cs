@@ -19,7 +19,7 @@ public enum StoragePlace
     /// <summary>«СЗП» - непринятый товар в поставках с номерами на «С».</summary>
     NetworkSupplies,
 
-    /// <summary>«В» - возвраты, времянка, олды.</summary>
+    /// <summary>«В» - возвраты и времянка.</summary>
     Returns,
 }
 
@@ -61,14 +61,14 @@ public static class StoragePlaces
 
     /// <summary>
     /// Лист «по адресам и таре»: «Маркетплейс» - на «МП», «Хранение» и «Хранилище» - на «А»,
-    /// «Возвраты», «Времянка» и «Олды» - на «В». В выгрузке олды пишутся «ОЛД».
-    /// Остальное («Образцы», «Брак уценка», «Нет Маркировки») в подтоварку не идёт.
+    /// «Возвраты» и «Времянка» - на «В». Остальное - олды («ОЛД» в выгрузке), «Образцы»,
+    /// «Брак уценка», «Нет Маркировки» - в подтоварку не идёт.
     /// </summary>
     public static StoragePlace? FromStorageType(string? storageType) => TextUtils.NormalizeKey(storageType) switch
     {
         "маркетплейс" => StoragePlace.Marketplace,
         "хранение" or "хранилище" => StoragePlace.Storage,
-        "возвраты" or "возврат" or "времянка" or "олд" or "олды" => StoragePlace.Returns,
+        "возвраты" or "возврат" or "времянка" => StoragePlace.Returns,
         _ => null,
     };
 

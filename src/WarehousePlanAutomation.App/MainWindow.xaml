@@ -134,7 +134,18 @@
                 <ListBox Grid.Row="2"
                          Style="{StaticResource NavList}"
                          ItemsSource="{Binding Pages}"
-                         SelectedItem="{Binding SelectedPage}">
+                         SelectedItem="{Binding SelectedPage}"
+                         AutomationProperties.Name="Задачи">
+                    <!--
+                        Без этого экранный диктор читает пункт как имя класса
+                        («…PlanTaskViewModel»): у пункта нет своего текста, он весь в шаблоне.
+                    -->
+                    <ListBox.ItemContainerStyle>
+                        <Style TargetType="ListBoxItem" BasedOn="{StaticResource NavItem}">
+                            <Setter Property="AutomationProperties.Name" Value="{Binding Title}" />
+                        </Style>
+                    </ListBox.ItemContainerStyle>
+
                     <ListBox.ItemTemplate>
                         <DataTemplate>
                             <Grid ToolTip="{Binding Subtitle}">
@@ -261,19 +272,12 @@
 
         <!-- ================= Выбранная страница ================= -->
         <!--
-            Ширина содержимого ограничена: на широком мониторе строка замечания через
-            весь экран нечитаема, а карточки, растянутые на 2000 px, выглядят пустыми.
+            Страница занимает всё окно: поля, карточки и список замечаний растягиваются
+            вместе с ним. Полей по бокам нет - на широком мониторе пустая полоса рядом
+            с узкой колонкой выглядит недоделкой.
         -->
-        <Grid Grid.Column="1">
-            <Grid.ColumnDefinitions>
-                <!-- Занимает всё, что осталось, но не шире 1060: дальше только поле -->
-                <ColumnDefinition Width="*" MaxWidth="1060" />
-                <ColumnDefinition Width="Auto" />
-            </Grid.ColumnDefinitions>
-
-            <ContentControl Grid.Column="0"
-                            Content="{Binding SelectedPage}"
-                            Focusable="False" />
-        </Grid>
+        <ContentControl Grid.Column="1"
+                        Content="{Binding SelectedPage}"
+                        Focusable="False" />
     </Grid>
 </Window>

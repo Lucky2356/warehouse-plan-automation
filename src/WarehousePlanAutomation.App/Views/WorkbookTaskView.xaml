@@ -32,10 +32,12 @@
             </Style.Triggers>
         </Style>
 
+        <!-- Подпись плитки переносится на вторую строку: «строк с местом хранения» в одну не лезет -->
         <Style x:Key="TileCaption" TargetType="TextBlock" BasedOn="{StaticResource CaptionText}">
             <Setter Property="FontSize" Value="11.5" />
             <Setter Property="TextTrimming" Value="CharacterEllipsis" />
-            <Setter Property="TextWrapping" Value="NoWrap" />
+            <Setter Property="TextWrapping" Value="Wrap" />
+            <Setter Property="MaxHeight" Value="32" />
             <Style.Triggers>
                 <DataTrigger Binding="{Binding NeedsAttention}" Value="True">
                     <Setter Property="Foreground" Value="{DynamicResource WarnInkBrush}" />
@@ -120,7 +122,21 @@
         </Style>
     </UserControl.Resources>
 
-    <Grid Margin="30,28,30,26">
+    <!--
+        Прокручивается вся страница целиком, а не одна карточка результата: в невысоком
+        окне до замечаний иначе не добраться, а колесо над карточкой ничего не двигало бы.
+    -->
+    <ScrollViewer x:Name="PageScroll"
+                  VerticalScrollBarVisibility="Auto"
+                  HorizontalScrollBarVisibility="Disabled"
+                  Focusable="False"
+                  PanningMode="VerticalOnly"
+                  Padding="30,28,26,26">
+    <!--
+        Страница не ниже окна: пустое место результата занимает всю оставшуюся высоту,
+        а когда результат длинный - страница просто прокручивается.
+    -->
+    <Grid MinHeight="{Binding ViewportHeight, ElementName=PageScroll}">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
@@ -199,7 +215,9 @@
                              Style="{StaticResource DropTargetPathBox}"
                              Text="{Binding SelectedFilePath, Mode=OneWay}"
                              ToolTip="{Binding SelectedFilePath}"
-                             ToolTipService.IsEnabled="{Binding HasSelectedFile}" />
+                             ToolTipService.IsEnabled="{Binding HasSelectedFile}"
+                             PreviewMouseWheel="OnInnerListWheel"
+                             AutomationProperties.Name="Путь к исходной книге" />
 
                     <Button Grid.Column="1"
                             Style="{StaticResource SecondaryButton}"
@@ -241,7 +259,9 @@
                                  Style="{StaticResource PathTextBox}"
                                  Text="{Binding OptionFolderPath, Mode=OneWay}"
                                  ToolTip="{Binding OptionFolderPath}"
-                                 ToolTipService.IsEnabled="{Binding HasOptionFolder}" />
+                                 ToolTipService.IsEnabled="{Binding HasOptionFolder}"
+                                 PreviewMouseWheel="OnInnerListWheel"
+                                 AutomationProperties.Name="{Binding FolderOptionTitle}" />
 
                         <Button Grid.Column="1"
                                 Style="{StaticResource SecondaryButton}"
@@ -286,6 +306,7 @@
                              ItemsSource="{Binding RunOptions}"
                              SelectedItem="{Binding SelectedRunOption, Mode=TwoWay}"
                              IsEnabled="{Binding IsIdle}"
+                             PreviewMouseWheel="OnInnerListWheel"
                              AutomationProperties.Name="{Binding RunOptionsTitle}">
                         <ListBox.ItemsPanel>
                             <ItemsPanelTemplate>
@@ -417,23 +438,13 @@
         </StackPanel>
 
         <!-- ================= Результат / ошибка / подсказка ================= -->
-        <!--
-            Замечаний может быть много, и карточка результата тогда выше окна.
-            Прокручивается вся область целиком: две вложенные прокрутки в одном месте
-            путают - непонятно, какая из них сейчас поедет.
-        -->
-        <ScrollViewer Grid.Row="5"
-                      Margin="0,16,0,0"
-                      VerticalScrollBarVisibility="Auto"
-                      HorizontalScrollBarVisibility="Disabled"
-                      Padding="0,0,4,0">
-        <Grid>
+        <Grid Grid.Row="5" Margin="0,16,0,0">
 
             <!-- Пока показывать нечего: место результата видно, но оно спокойное -->
             <Border BorderBrush="{DynamicResource CardBorderBrush}"
                     BorderThickness="1"
                     CornerRadius="10"
-                    MinHeight="150"
+                    MinHeight="190"
                     Visibility="{Binding ShowHint, Converter={StaticResource BoolToVisibility}}">
                 <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
                     <Path Data="M6.5,4.5 L25.5,4.5 L25.5,27.5 L6.5,27.5 Z M11,11.5 L21,11.5 M11,16.5 L21,16.5 M11,21.5 L17,21.5"
@@ -511,7 +522,9 @@
                                 <TextBlock Style="{StaticResource SectionLabelText}" Text="РЕЗУЛЬТАТ" />
                                 <TextBox Style="{StaticResource ResultPathBox}"
                                          Margin="0,3,0,0"
-                                         Text="{Binding ResultPath, Mode=OneWay}" />
+                                         Text="{Binding ResultPath, Mode=OneWay}"
+                                         PreviewMouseWheel="OnInnerListWheel"
+                                         AutomationProperties.Name="Путь к готовой книге" />
                             </StackPanel>
 
                             <!--
@@ -567,7 +580,7 @@
                     <ItemsControl Grid.Row="1" Margin="16,14,10,0" ItemsSource="{Binding Counters}">
                         <ItemsControl.ItemsPanel>
                             <ItemsPanelTemplate>
-                                <WrapPanel ItemWidth="162" ItemHeight="84" />
+                                <WrapPanel ItemWidth="170" ItemHeight="88" />
                             </ItemsPanelTemplate>
                         </ItemsControl.ItemsPanel>
                         <ItemsControl.ItemTemplate>
@@ -682,6 +695,6 @@
                 </Grid>
             </Border>
         </Grid>
-        </ScrollViewer>
     </Grid>
+    </ScrollViewer>
 </UserControl>

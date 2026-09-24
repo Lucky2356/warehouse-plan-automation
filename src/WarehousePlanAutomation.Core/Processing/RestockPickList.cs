@@ -10,10 +10,10 @@ public sealed record StockCode(string Code, double Quantity, string SupplyNumber
 /// <summary>Почему у строки листа «из‹место›» другой код.</summary>
 public enum PickMark
 {
-    /// <summary>Код, который находит ВПР по АЦР, и на нём хватает.</summary>
+    /// <summary>Наименьший код АЦР, и на нём хватает.</summary>
     None,
 
-    /// <summary>На первом коде не хватает, взят другой код, где хватает. Строка голубая.</summary>
+    /// <summary>На наименьшем коде не хватает, взят следующий, где хватает. Строка голубая.</summary>
     ReplacedCode,
 
     /// <summary>Ни на одном коде не хватает - количество разнесено по нескольким. Строки зелёные.</summary>
@@ -35,9 +35,9 @@ public sealed record PickLine(
     string City = "");
 
 /// <summary>
-/// Код для строки листа «из‹место›». ВПР по АЦР находит первый код на листе места хранения;
-/// если на нём столько нет, берётся код, на котором хватает (из «3, 1 и 30» - тот, где 30),
-/// а если хватает только вместе - строка размножается по кодам.
+/// Код для строки листа «из‹место›». Коды АЦР перебираются с наименьшего: на котором
+/// хватает, тот и берём. Если не хватает ни на одном - количество набирается по кодам
+/// в том же порядке.
 /// </summary>
 public static class PickListBuilder
 {
@@ -52,25 +52,22 @@ public static class PickListBuilder
             return new[] { new PickLine(rowIndex, place, string.Empty, quantity, 0d, string.Empty, PickMark.None, quantity) };
         }
 
-        var first = codes[0];
+        var ordered = Ascending(codes);
+        var first = ordered[0];
         if (first.Quantity >= quantity)
         {
             return new[] { Line(first, quantity, PickMark.None) };
         }
 
-        var best = codes.Aggregate((a, b) => b.Quantity > a.Quantity ? b : a);
-        if (best.Quantity >= quantity)
+        // Следующий по счёту код, на котором хватает: искать самый большой не нужно -
+        // берём ближайший подходящий.
+        var enough = ordered.FirstOrDefault(code => code.Quantity >= quantity);
+        if (enough is not null)
         {
-            return new[] { Line(best, quantity, PickMark.ReplacedCode) };
+            return new[] { Line(enough, quantity, PickMark.ReplacedCode) };
         }
 
-        var positive = codes
-            .Select((code, order) => (code, order))
-            .Where(item => item.code.Quantity > 0d)
-            .OrderByDescending(item => item.code.Quantity)
-            .ThenBy(item => item.order)
-            .Select(item => item.code)
-            .ToList();
+        var positive = ordered.Where(code => code.Quantity > 0d).ToList();
 
         if (positive.Count == 0)
         {
@@ -98,6 +95,25 @@ public static class PickListBuilder
         PickLine Line(StockCode code, double take, PickMark mark, double shortage = 0d) =>
             new(rowIndex, place, code.Code, take, code.Quantity, code.SupplyNumber, mark, shortage);
     }
+
+    /// <summary>
+    /// Коды от наименьшего к большему. Коды товара - числа, но записаны текстом, поэтому
+    /// сравниваются как числа; всё, что числом не читается, уходит в конец по алфавиту.
+    /// </summary>
+    private static IReadOnlyList<StockCode> Ascending(IReadOnlyList<StockCode> codes) => codes
+        .Select((code, order) => (code, order, number: Number(code.Code)))
+        .OrderBy(item => item.number is null)
+        .ThenBy(item => item.number ?? 0d)
+        .ThenBy(item => item.code.Code, StringComparer.Ordinal)
+        .ThenBy(item => item.order)
+        .Select(item => item.code)
+        .ToList();
+
+    private static double? Number(string code) =>
+        double.TryParse(
+            TextUtils.Normalize(code), NumberStyles.Any, CultureInfo.InvariantCulture, out var value)
+            ? value
+            : null;
 
     /// <summary>
     /// Раздача собранного по городам: города идут по очереди, каждый берёт своё количество
