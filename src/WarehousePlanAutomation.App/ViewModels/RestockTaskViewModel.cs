@@ -30,6 +30,8 @@ public sealed class RestockTaskViewModel : WorkbookTaskViewModel
         [RestockSchema.AddressSheet] = "места хранения и загрузочники не соберутся",
         [RestockSchema.ReservesSheet] = "места хранения и загрузочники не соберутся",
         [RestockSchema.SuppliesSheet] = "места хранения и загрузочники не соберутся",
+        [RestockSchema.ExceptionsSheet] =
+            "исключений нет: всё, что с запретом забора из розницы, пойдёт на согласование",
     };
 
     public override string Title => "Подтоварка МП";
@@ -45,8 +47,10 @@ public sealed class RestockTaskViewModel : WorkbookTaskViewModel
     public override string ActionCaption => "Разобрать подтоварку";
 
     public override string InitialHint =>
-        "Выберите книгу подтоварки, в которой уже подтянуты «Запрет», «Фактическое кол-во» " +
-        "и «Прогнозный sellout» из сезонного файла и обновлены листы «по адресам и таре», «Р» и «МПП».";
+        "Выберите книгу подтоварки, в которой уже подтянуты «Запрет» и «Фактическое кол-во» " +
+        "из сезонного файла и обновлены листы «по адресам и таре», «Р» и «МПП». Городов может быть " +
+        "несколько: тогда нужна колонка «Итого в подтоварку». Что отдаём без согласования, " +
+        "программа возьмёт с листа «Исключения», если он есть.";
 
     public override string SuccessMessage => "Подтоварка разобрана";
 
