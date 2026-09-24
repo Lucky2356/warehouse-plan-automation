@@ -4,6 +4,19 @@ using WarehousePlanAutomation.Core.Text;
 namespace WarehousePlanAutomation.Core.Sheets;
 
 /// <summary>
+/// Город подтоварки: короткое название («Мск»), колонка с его количеством и заголовок
+/// этой колонки целиком - его программа называет в сообщениях.
+/// </summary>
+public sealed record RestockCity(string Name, int Column, string Title = "");
+
+/// <summary>
+/// Колонка, по которой считается подтоварка, и города. Городов нет - считаем по одной
+/// колонке «в подтоварку»; города есть - по итоговой, а по городам делятся только
+/// листы «из‹место›» и загрузочники.
+/// </summary>
+public sealed record RestockQuantityLayout(int Total, IReadOnlyList<RestockCity> Cities);
+
+/// <summary>
 /// Книга подтоварки маркетплейса. Названия листов и колонок в одном месте:
 /// буквы колонок нигде не зашиты, всё ищется по заголовку.
 /// </summary>
@@ -28,6 +41,12 @@ public static class RestockSchema
 
     public const string NotCollectedSheet = "Не собрано";
 
+    /// <summary>
+    /// Лист аналитика: секторы, группы и АЦР, которые отдаём без согласования, что бы
+    /// ни стояло в «Запрете». Листа нет - исключений нет.
+    /// </summary>
+    public const string ExceptionsSheet = "Исключения";
+
     /// <summary>Заказы, которые по «коменту» грузятся отдельно.</summary>
     public const string SeparateSheet = "Отдельно";
 
@@ -37,18 +56,6 @@ public static class RestockSchema
     public const string NoteOk = "Ок";
 
     public const string NoteApprove = "Согласовать";
-
-    /// <summary>
-    /// Секторы, которым согласование не нужно: по решению аналитика мелочь везут
-    /// без отдельного разговора. Украшения для волос попали сюда по готовой подтоварке -
-    /// там все такие строки помечены «Ок».
-    /// </summary>
-    public static readonly IReadOnlyList<string> SectorsWithoutApproval = new[]
-    {
-        "БИЖУТЕРИЯ",
-        "МЕЛКИЕ АКСЕССУАРЫ",
-        "УКРАШЕНИЯ ДЛЯ ВОЛОС",
-    };
 
     /// <summary>Значения колонки «Запрет». Сравниваются без учёта регистра.</summary>
     public static class Ban
@@ -129,8 +136,6 @@ public static class RestockSchema
             new ColumnSpec(Code, new[] { "код" }, exactOnly: true),
 
             new ColumnSpec(Price, new[] { "рц" }, exactOnly: true),
-            // В книге колонка бывает подписана складом: «в подтоварку Мск».
-            new ColumnSpec(Quantity, new[] { "в подтоварку" }, prefixOnly: true),
             // «Запрет» ищется раньше «комента»: у названия «Комментарий (на запрет)»
             // при поиске отбрасывается скобка, и без этого порядка колонку забрал бы
             // «комент» - а «Запрет» не нашёлся бы вовсе.
@@ -142,7 +147,10 @@ public static class RestockSchema
             new ColumnSpec(Comment, new[] { "комент", "комментарий" }, exactOnly: true),
             new ColumnSpec(Priority, new[] { "приоритет" }, exactOnly: true),
             new ColumnSpec(Available, new[] { "фактическое кол-во", "фактическое количество" }),
-            new ColumnSpec(Sellout, new[] { "прогнозный sellout", "sellout" }),
+
+            // «Прогнозный sellout» на решение по строке больше не влияет и нужен только
+            // на листе согласования - без него книга всё равно разбирается.
+            new ColumnSpec(Sellout, new[] { "прогнозный sellout", "sellout" }, optional: true),
             new ColumnSpec(Note, new[] { "заметка", "заметки" }, exactOnly: true, optional: true),
             new ColumnSpec(Check, new[] { "проверка" }, exactOnly: true, optional: true),
         };
@@ -157,40 +165,123 @@ public static class RestockSchema
             new CreatedColumn(Check, Check, new[] { "проверка" }),
         };
 
+        /// <summary>Итог по всем городам: по нему идут все расчёты подтоварки.</summary>
+        public static readonly IReadOnlyList<string> TotalKeys = new[]
+        {
+            "итого в подтоварку", "итого на мп",
+        };
+
         /// <summary>
-        /// Заголовки листа «на загрузку». Колонка «в подтоварку» может быть подписана складом -
-        /// «в подтоварку Мск». Если таких колонок несколько («в подтоварку» и «в подтоварку Мск»,
-        /// «… Мск» и «… Нск»), книга останавливается с объяснением: подтоварка по нескольким
-        /// складам пока не разбирается, а молча взять одну из колонок нельзя - количество
-        /// другого склада потерялось бы.
+        /// Заголовки листа «на загрузку». Колонка количества ищется отдельно от остальных:
+        /// городов может быть несколько.
         /// </summary>
         public static HeaderMap ResolveHeaders(SheetGrid grid)
         {
             var headers = HeaderResolver.Resolve(grid, LoadSheet, Specs);
-            var key = TextUtils.NormalizeKey(Quantity);
+            var quantity = ResolveQuantity(grid, headers.HeaderRow);
 
-            var names = new List<string>();
+            var columns = new Dictionary<string, int>(headers.Columns, StringComparer.Ordinal)
+            {
+                [Quantity] = quantity.Total,
+            };
+
+            return new HeaderMap(headers.HeaderRow, columns);
+        }
+
+        /// <summary>Города подтоварки в порядке колонок. Пусто - город один.</summary>
+        public static IReadOnlyList<RestockCity> ResolveCities(SheetGrid grid, int headerRow) =>
+            ResolveQuantity(grid, headerRow).Cities;
+
+        /// <summary>
+        /// Колонка количества и города.
+        ///
+        /// Один город - одна колонка «в подтоварку»; она же может быть подписана складом
+        /// («в подтоварку Мск»). Городов несколько - на каждый своя колонка («в подтоварку Мск»
+        /// или «Склад Мск») плюс итоговая «Итого в подтоварку» («Итого на МП»): все расчёты
+        /// идут по итогу, а по городам делятся только листы «из‹место›» и загрузочники.
+        /// </summary>
+        public static RestockQuantityLayout ResolveQuantity(SheetGrid grid, int headerRow)
+        {
+            var quantityKey = TextUtils.NormalizeKey(Quantity);
+            const string warehouseKey = "склад";
+
+            var named = new List<RestockCity>();
+            var warehouses = new List<RestockCity>();
+            var plain = new List<RestockCity>();
+            int? total = null;
+
             for (var column = grid.FirstColumn; column <= grid.LastColumn; column++)
             {
-                if (TextUtils.NormalizeKey(grid.Text(headers.HeaderRow, column)).StartsWith(key, StringComparison.Ordinal))
+                var title = TextUtils.Normalize(grid.Text(headerRow, column));
+                var key = TextUtils.NormalizeKey(title);
+                if (key.Length == 0)
                 {
-                    names.Add(TextUtils.Normalize(grid.Text(headers.HeaderRow, column)));
+                    continue;
+                }
+
+                if (total is null && TotalKeys.Any(name => key.StartsWith(name, StringComparison.Ordinal)))
+                {
+                    total = column;
+                    continue;
+                }
+
+                if (key.StartsWith(quantityKey, StringComparison.Ordinal))
+                {
+                    var city = title[quantityKey.Length..].Trim();
+                    (city.Length == 0 ? plain : named).Add(
+                        new RestockCity(city.Length == 0 ? title : city, column, title));
+                }
+                else if (key.StartsWith(warehouseKey + " ", StringComparison.Ordinal))
+                {
+                    warehouses.Add(new RestockCity(title[(warehouseKey.Length + 1)..].Trim(), column, title));
                 }
             }
 
-            if (names.Count > 1)
+            // Городские колонки - те, которых больше одной: «в подтоварку Мск» и «… Спб»
+            // либо «Склад Мск» и «Склад Спб». Одинокий «Склад …» городом не считается:
+            // в книге хватает колонок с похожим началом.
+            var cities = named.Count > 1 ? named : warehouses.Count > 1 ? warehouses : new List<RestockCity>();
+            var single = plain.Concat(named).OrderBy(city => city.Column).ToList();
+
+            // Итог есть - считаем по нему; города при нём нужны только для деления
+            // загрузочников.
+            if (total is { } totalColumn)
+            {
+                return new RestockQuantityLayout(totalColumn, cities);
+            }
+
+            if (cities.Count > 1)
+            {
+                throw new WorkbookValidationException(new[]
+                {
+                    "на листе «" + LoadSheet + "» несколько колонок с количеством по городам: " +
+                    string.Join(", ", cities.Select(city => "«" + city.Title + "»")) +
+                    ", а итоговой колонки «Итого в подтоварку» нет. Подтоварка на несколько городов " +
+                    "считается по итогу - добавьте его или оставьте один город",
+                });
+            }
+
+            if (single.Count == 1)
+            {
+                return new RestockQuantityLayout(single[0].Column, Array.Empty<RestockCity>());
+            }
+
+            if (single.Count > 1)
             {
                 throw new WorkbookValidationException(new[]
                 {
                     "на листе «" + LoadSheet + "» несколько колонок «" + Quantity + "»: " +
-                    string.Join(", ", names.Select(name => "«" + name + "»")) +
-                    ". Подтоварка сразу по нескольким складам пока не поддерживается - " +
-                    "разберите склады отдельными файлами, оставив в каждом одну такую колонку",
+                    string.Join(", ", single.Select(city => "«" + city.Title + "»")) +
+                    ". Непонятно, по какой считать - оставьте одну или добавьте «Итого в подтоварку»",
                 });
             }
 
-            return headers;
+            throw new WorkbookValidationException(new[]
+            {
+                "на листе «" + LoadSheet + "» не найдена колонка «" + Quantity + "»",
+            });
         }
+
 
         /// <summary>Колонка, которую заполняет расстановка мест хранения.</summary>
         public const string Place = "Место хранения";

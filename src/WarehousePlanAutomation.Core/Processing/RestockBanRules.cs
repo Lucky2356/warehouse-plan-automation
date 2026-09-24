@@ -7,15 +7,15 @@ namespace WarehousePlanAutomation.Core.Processing;
 /// <summary>Строка листа «на загрузку» - то, что нужно для решения по «Запрету».</summary>
 /// <param name="Ban">Значение колонки «Запрет» как есть: текст, пусто или ошибка формулы.</param>
 /// <param name="Available">«Фактическое кол-во, которое можно собрать на ВБ+Озон».</param>
-/// <param name="Sellout">«Прогнозный sellout» в процентах: 80 - это 80 %.</param>
 public sealed record RestockRow(
     int Index,
     string Sector,
+    string Group,
+    string Article,
     string Acr,
     double? Quantity,
     object? Ban,
-    object? Available,
-    double? Sellout);
+    object? Available);
 
 /// <summary>Что программа делает со строкой.</summary>
 /// <param name="Note">Что записать в «Заметка». Пусто - решения нет, оставить как есть.</param>
@@ -43,10 +43,9 @@ public sealed record RestockDecision(
 /// </summary>
 public static class RestockBanRules
 {
-    /// <summary>Порог «Прогнозного sellout», с которого нужно согласование.</summary>
-    public const double SelloutThreshold = 80d;
+    public static RestockDecision Decide(RestockRow row) => Decide(row, RestockExceptions.Empty);
 
-    public static RestockDecision Decide(RestockRow row)
+    public static RestockDecision Decide(RestockRow row, RestockExceptions exceptions)
     {
         var ban = TextUtils.NormalizeKey(CellError.IsError(row.Ban) ? RestockSchema.Ban.NotFound : AsText(row.Ban));
 
@@ -67,6 +66,13 @@ public static class RestockBanRules
                 false,
                 "в «Запрете» стоит «" + AsText(row.Ban) + "»: нужно отдельное согласование",
                 null);
+        }
+
+        // Лист «Исключения» сильнее любого запрета, кроме «доп согл»: такой товар
+        // отдаём по остаткам мест хранения.
+        if (exceptions.Covers(row.Sector, row.Group, row.Article, row.Acr))
+        {
+            return Ok(row);
         }
 
         if (ban.StartsWith(RestockSchema.Ban.OrderOnly, StringComparison.Ordinal))
@@ -117,16 +123,12 @@ public static class RestockBanRules
     }
 
     /// <summary>
-    /// «Запрет забора из розницы»: не берём ничего. Бижутерию и мелкие аксессуары
-    /// согласовывать не нужно, остальное идёт на лист согласования.
+    /// «Запрет забора из розницы»: не берём ничего, строка идёт на лист согласования.
+    /// Без согласования отдаётся только то, что аналитик внёс в «Исключения», - это
+    /// проверено раньше.
     /// </summary>
     private static RestockDecision NoRetail(RestockRow row)
     {
-        if (IsWithoutApproval(row.Sector))
-        {
-            return new RestockDecision(row.Index, RestockSchema.NoteOk, null, true, string.Empty, null);
-        }
-
         return new RestockDecision(
             row.Index,
             RestockSchema.NoteApprove,
@@ -137,14 +139,12 @@ public static class RestockBanRules
     }
 
     /// <summary>
-    /// Пустой «Запрет».
+    /// Пустой «Запрет»: решает разница «Фактическое кол-во» минус «в подтоварку».
+    /// Ноль и больше - хватает, «Ок»; меньше нуля - «Согласовать».
     ///
-    /// Разница «Фактическое кол-во» минус «в подтоварку» считается только там, где
-    /// «Фактическое кол-во» заполнено: аналитик сначала фильтрует лист по непустым
-    /// значениям этой колонки и только в них пишет формулу. Где собирать на ВБ+Озон
-    /// нечего (пусто или ноль), разницы нет - решает «Прогнозный sellout».
-    ///
-    /// Проверено по готовой подтоварке: из 385 строк без запрета так разложились все.
+    /// Разница считается только там, где «Фактическое кол-во» заполнено: аналитик сначала
+    /// фильтрует лист по непустым значениям этой колонки и только в них пишет формулу.
+    /// Где собирать на ВБ+Озон нечего (пусто или ноль), сравнивать не с чем - строка «Ок».
     /// </summary>
     private static RestockDecision WithoutBan(RestockRow row)
     {
@@ -154,51 +154,13 @@ public static class RestockBanRules
         }
 
         var available = Number(row.Available) ?? 0d;
-
-        if (available > 0)
+        if (available <= 0)
         {
-            var difference = available - quantity;
-
-            if (difference > 0)
-            {
-                return Ok(row);
-            }
-
-            if (difference < 0)
-            {
-                return new RestockDecision(
-                    row.Index,
-                    RestockSchema.NoteApprove,
-                    null,
-                    false,
-                    "не хватает " + Format(-difference) + " шт.: можно собрать " + Format(available) +
-                    ", просят " + Format(quantity),
-                    null);
-            }
+            return Ok(row);
         }
 
-        return BySellout(row, available);
-    }
-
-    /// <summary>
-    /// Решение по «Прогнозному sellout»: с 80 % и выше товар нужно согласовать,
-    /// кроме бижутерии и мелких аксессуаров. Если sellout не прочитался, утверждать,
-    /// что он высокий, не из чего - строка остаётся «Ок», но об этом пишется замечание.
-    /// </summary>
-    private static RestockDecision BySellout(RestockRow row, double available)
-    {
-        if (row.Sellout is not { } sellout)
-        {
-            return new RestockDecision(
-                row.Index,
-                RestockSchema.NoteOk,
-                null,
-                false,
-                string.Empty,
-                "«Прогнозный sellout» не прочитался - строка оставлена как «Ок»");
-        }
-
-        if (sellout < SelloutThreshold || IsWithoutApproval(row.Sector))
+        var difference = available - quantity;
+        if (difference >= 0)
         {
             return Ok(row);
         }
@@ -208,9 +170,8 @@ public static class RestockBanRules
             RestockSchema.NoteApprove,
             null,
             false,
-            available > 0
-                ? "остаток ровно нулевой, прогнозный sellout " + Format(sellout) + " %"
-                : "собрать на ВБ+Озон нечего, прогнозный sellout " + Format(sellout) + " %",
+            "не хватает " + Format(-difference) + " шт.: можно собрать " + Format(available) +
+            ", просят " + Format(quantity),
             null);
     }
 
@@ -219,9 +180,6 @@ public static class RestockBanRules
 
     private static RestockDecision Unknown(RestockRow row, string problem) =>
         new(row.Index, string.Empty, null, false, string.Empty, problem);
-
-    private static bool IsWithoutApproval(string? sector) =>
-        RestockSchema.SectorsWithoutApproval.Any(known => TextUtils.EqualsKey(sector, TextUtils.NormalizeKey(known)));
 
     private static string AsText(object? value) => TextUtils.CellToString(value);
 

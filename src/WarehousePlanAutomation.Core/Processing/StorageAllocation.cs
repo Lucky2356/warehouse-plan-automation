@@ -27,15 +27,15 @@ public static class StoragePlaces
 {
     /// <summary>
     /// Порядок, в котором берём товар. Он же зашит в названиях колонок «на загрузку»:
-    /// «1МП», «2МПП», «3А», «4СЗП», «5В».
+    /// «1МП», «2МПП», «3В», «4А», «5СЗП».
     /// </summary>
     public static readonly IReadOnlyList<StoragePlace> Priority = new[]
     {
         StoragePlace.Marketplace,
         StoragePlace.Supplies,
+        StoragePlace.Returns,
         StoragePlace.Storage,
         StoragePlace.NetworkSupplies,
-        StoragePlace.Returns,
     };
 
     /// <summary>Как место называется на листах и в тексте «Места хранения».</summary>
@@ -91,10 +91,10 @@ public enum ReserveKind
     /// <summary>Резерв лежит на определённом месте, его вычитаем оттуда.</summary>
     Place,
 
-    /// <summary>«Опт» - может взять с любого места, конкретному месту резерв не мешает.</summary>
+    /// <summary>«Опт» - может взять с любого места, где есть остаток.</summary>
     Anywhere,
 
-    /// <summary>«На образцы» - резервы не учитываем.</summary>
+    /// <summary>«На образцы» и «на фото» - берут только с поставок: МПП и СЗП.</summary>
     Samples,
 
     /// <summary>По комментарию место не понять.</summary>
@@ -130,7 +130,7 @@ public static class ReserveTargets
     {
         var key = TextUtils.NormalizeKey(comment);
 
-        if (key.Contains("образц", StringComparison.Ordinal))
+        if (key.Contains("образц", StringComparison.Ordinal) || key.Contains("на фото", StringComparison.Ordinal))
         {
             return new ReserveTarget(ReserveKind.Samples, null);
         }
@@ -209,8 +209,9 @@ public sealed record StorageAllocation(
 /// минус «в подтоварку» не меньше нуля. Места перебираются в порядке МП, МПП, А, СЗП, В.
 ///
 /// Если такого нет, количество набирается с нескольких мест по той же очереди. Резервы при этом
-/// вычитаются только из того места, на котором лежат, - это видно по комментарию заказа.
-/// «Опт» может взять откуда угодно, а на образцы резервы не учитываются вовсе.
+/// вычитаются из того места, на котором лежат, - это видно по комментарию заказа. Резервы опта
+/// снимаются с любого места, где есть остаток, а на образцы и на фото - только с поставок,
+/// то есть с МПП и СЗП. Не вычитается только резерв, место которого по комментарию не понять.
 /// </summary>
 public static class StorageAllocator
 {
@@ -243,6 +244,16 @@ public static class StorageAllocator
                     available[place] = Math.Max(available[place] - reserve.Quantity, 0d);
                     break;
 
+                // На образцы и на фото берут из поставок, опт - откуда угодно. Резерв снимается
+                // с мест по очереди: пока он не закончится или места не опустеют.
+                case ReserveKind.Samples:
+                    Subtract(available, SamplePlaces, reserve.Quantity);
+                    break;
+
+                case ReserveKind.Anywhere:
+                    Subtract(available, StoragePlaces.Priority, reserve.Quantity);
+                    break;
+
                 case ReserveKind.Unknown:
                     unknown.Add(reserve);
                     break;
@@ -267,6 +278,30 @@ public static class StorageAllocator
         }
 
         return new StorageAllocation(parts, Math.Max(remaining, 0d), unknown);
+    }
+
+    /// <summary>Откуда берут резервы на образцы и на фото.</summary>
+    private static readonly IReadOnlyList<StoragePlace> SamplePlaces = new[]
+    {
+        StoragePlace.Supplies,
+        StoragePlace.NetworkSupplies,
+    };
+
+    private static void Subtract(
+        IDictionary<StoragePlace, double> available, IReadOnlyList<StoragePlace> places, double quantity)
+    {
+        var remaining = quantity;
+        foreach (var place in places)
+        {
+            if (remaining <= 0d)
+            {
+                return;
+            }
+
+            var take = Math.Min(available[place], remaining);
+            available[place] -= take;
+            remaining -= take;
+        }
     }
 
     private static double Stock(IReadOnlyDictionary<StoragePlace, double> stock, StoragePlace place) =>

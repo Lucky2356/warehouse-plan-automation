@@ -43,7 +43,14 @@ internal sealed class ExcelRestockStorageStage
     /// <summary>Количество разнесено по кодам - строки зелёные (RGB 226 239 218).</summary>
     private const int SplitCodeFill = 0xDAEFE2;
 
-    private static readonly Regex LoaderSheetName = new(@"^З(МП|МПП|А|СЗП|В)(-.*|\s\d+)?$", RegexOptions.CultureInvariant);
+    /// <summary>«ЗМП-любой», «ЗМПП», «З-микс»: место в названии есть не всегда.</summary>
+    private static readonly Regex LoaderSheetName = new(@"^З(МП|МПП|А|СЗП|В)?(-.*|\s\d+)?$", RegexOptions.CultureInvariant);
+
+    /// <summary>Строка ждёт согласования - жёлтая заливка (RGB 255 230 153).</summary>
+    private const int ApprovalFill = 0x99E6FF;
+
+    /// <summary>Что написано рядом со строкой, которая ещё не согласована.</summary>
+    private const string ApprovalNote = "На согласовании";
 
     private readonly IAppLogger _logger;
     private readonly Func<DateTime> _now;
@@ -67,7 +74,12 @@ internal sealed class ExcelRestockStorageStage
         string Priority,
         string Note,
         object? ClientCode,
-        object? Price);
+        object? Price,
+        IReadOnlyList<double> CityQuantities)
+    {
+        public bool NeedsApproval =>
+            TextUtils.EqualsKey(Note, TextUtils.NormalizeKey(RestockSchema.NoteApprove));
+    }
 
     /// <summary>Остатки места: по АЦР - коды в порядке листа.</summary>
     private sealed class PlaceStock
@@ -164,7 +176,13 @@ internal sealed class ExcelRestockStorageStage
 
         cancellationToken.ThrowIfCancellationRequested();
         report("Места хранения на «" + RestockSchema.LoadSheet + "»", 66);
-        var load = ReadLoad(loadSheet, out var loadHeaders, out var loadFirst, out var loadLast);
+        var load = ReadLoad(loadSheet, out var loadHeaders, out var loadFirst, out var loadLast, out var cities);
+        if (cities.Count > 0)
+        {
+            _logger.Information(
+                "Подтоварка на несколько городов: " + string.Join(", ", cities.Select(city => city.Name)) +
+                ". Расчёт идёт по итоговой колонке, по городам делятся листы «из‹место›» и загрузочники.");
+        }
 
         var allocations = new Dictionary<int, StorageAllocation>();
         foreach (var row in load.Where(row => row.AcrKey.Length > 0 && row.Quantity > 0d))
@@ -221,19 +239,30 @@ internal sealed class ExcelRestockStorageStage
                 continue;
             }
 
+            var lines = new List<PickLine>();
             foreach (var part in allocation.Parts)
             {
-                pickLines.AddRange(PickListBuilder.Build(row.Index, part.Place, part.Quantity, stock[part.Place].Of(row.AcrKey)));
+                lines.AddRange(PickListBuilder.Build(row.Index, part.Place, part.Quantity, stock[part.Place].Of(row.AcrKey)));
             }
+
+            // Собранное раздаётся городам по очереди: первому городу - с первых мест,
+            // следующему достаётся то, что осталось.
+            pickLines.AddRange(PickListBuilder.SplitByCity(
+                lines,
+                cities.Select((city, index) => (city.Name, row.CityQuantities[index])).ToList()));
         }
 
-        var loaders = RestockLoaderBuilder.Build(pickLines, index => byIndex[index].Comment);
+        // У подразделения 206 склад не делит заказы по местам хранения: загрузочник
+        // собирается на каждый «комент» целиком.
+        var mergePlaces = load.Any(row => TextUtils.EqualsKey(
+            TextUtils.CellToString(row.ClientCode), RestockLoaderBuilder.SinglePlaceDivision));
+        var loaders = RestockLoaderBuilder.Build(pickLines, index => byIndex[index].Comment, mergePlaces);
 
         // Загрузочники стоят сразу за «Не собрано» и «Отдельно»: их копируют
         // в «Распределительный логист», а листы «из‹место›» - рабочие, они дальше.
         foreach (var loader in loaders)
         {
-            anchor = WriteLoader(workbookObject, anchor, loader, byIndex, divisionGroups, scope);
+            anchor = WriteLoader(workbookObject, anchor, loader, byIndex, divisionGroups, cities, scope);
         }
 
         foreach (var place in StoragePlaces.Priority)
@@ -242,7 +271,8 @@ internal sealed class ExcelRestockStorageStage
             if (lines.Count > 0)
             {
                 anchor = WritePickSheet(
-                    workbookObject, anchor, loadSheet, loadHeaders, place, lines, byIndex, allocations, stock[place], scope, warnings);
+                    workbookObject, anchor, loadSheet, loadHeaders, place, lines, byIndex, allocations, stock[place],
+                    cities, scope, warnings);
             }
         }
 
@@ -255,12 +285,12 @@ internal sealed class ExcelRestockStorageStage
         var toApprove = pickLines
             .Select(line => line.RowIndex)
             .Distinct()
-            .Count(index => TextUtils.EqualsKey(byIndex[index].Note, TextUtils.NormalizeKey(RestockSchema.NoteApprove)));
+            .Count(index => byIndex[index].NeedsApproval);
         if (toApprove > 0)
         {
             warnings.Add(new ProcessingWarning(
                 "В загрузочники попали строки с «Заметкой» «Согласовать»: " + toApprove +
-                ". Грузите их только после согласования.",
+                ". Они выделены жёлтым и подписаны «" + ApprovalNote + "» - грузите их только после согласования.",
                 RestockSchema.ApprovalSheet,
                 RestockSchema.ApprovalSheet));
         }
@@ -545,17 +575,24 @@ internal sealed class ExcelRestockStorageStage
 
     // ================= «на загрузку» =================
 
-    private IReadOnlyList<LoadRow> ReadLoad(object sheet, out HeaderMap headers, out int firstRow, out int lastRow)
+    private IReadOnlyList<LoadRow> ReadLoad(
+        object sheet,
+        out HeaderMap headers,
+        out int firstRow,
+        out int lastRow,
+        out IReadOnlyList<RestockCity> cities)
     {
         var bounds = ExcelSheetOperations.GetUsedBounds(sheet);
         var top = ExcelSheetOperations.ReadBlock(
             sheet, bounds.FirstRow, Math.Min(bounds.FirstRow + HeaderResolver.DefaultScanRows - 1, bounds.LastRow),
             bounds.FirstColumn, bounds.LastColumn, withFormulas: false);
         headers = RestockSchema.Load.ResolveHeaders(top);
+        cities = RestockSchema.Load.ResolveCities(top, headers.HeaderRow);
         firstRow = headers.HeaderRow + 1;
         lastRow = ExcelSheetOperations.GetLastFilledRow(sheet, headers[RestockSchema.Load.Acr], bounds.LastRow);
 
         var marketplacePrice = FindHeader(top, headers.HeaderRow, "цена на мп");
+        var cityColumns = cities.Select(city => city.Column).ToList();
         var lastColumn = Math.Max(bounds.LastColumn, headers.Columns.Values.Max());
         var grid = ExcelSheetOperations.ReadBlock(sheet, firstRow, Math.Max(lastRow, firstRow), 1, lastColumn, withFormulas: false);
 
@@ -578,7 +615,8 @@ internal sealed class ExcelRestockStorageStage
                 RestockLoaderBuilder.PriorityText(grid.Value(row, map[RestockSchema.Load.Priority])),
                 TextUtils.Normalize(grid.Text(row, map[RestockSchema.Load.Note])),
                 grid.Value(row, map[RestockSchema.Load.ClientCode]),
-                price));
+                price,
+                cityColumns.Select(column => grid.Number(row, column) ?? 0d).ToList()));
         }
 
         return result;
@@ -618,7 +656,17 @@ internal sealed class ExcelRestockStorageStage
         foreach (var place in ordered)
         {
             var name = StoragePlaces.LoadColumn(place);
-            var column = EnsureColumn(sheet, headers, name, new[] { name.ToLowerInvariant(), StoragePlaces.Code(place).ToLowerInvariant() });
+            var code = StoragePlaces.Code(place).ToLowerInvariant();
+
+            // Колонка могла остаться от прошлой очереди мест - «3А» вместо «4А». Она находится
+            // по любому номеру и переподписывается: цифра в названии говорит, какая место
+            // по счёту, и врать не должна.
+            var keys = new[] { name.ToLowerInvariant(), code }
+                .Concat(Enumerable.Range(1, StoragePlaces.Priority.Count).Select(number => number + code))
+                .ToList();
+
+            var column = EnsureColumn(sheet, headers, name, keys);
+            RenameNumbered(sheet, headerRow, column, name, code);
             var placeStock = stock[place];
             columns.Add((column, SumIfs(placeStock.Sheet, placeStock.QuantityColumn, placeStock.AcrColumn, acrLetter, firstRow)));
         }
@@ -666,6 +714,24 @@ internal sealed class ExcelRestockStorageStage
             "«Место хранения» на строке заголовков " + headerRow + ", колонка " + ExcelColumn.ToLetters(placeColumn) + ".");
     }
 
+    /// <summary>
+    /// Переподписывает колонку остатка места, если её номер отстал от нынешней очереди:
+    /// «3А» → «4А». Колонку без номера («А») аналитик подписал сам - её не трогаем.
+    /// </summary>
+    private void RenameNumbered(object sheet, int headerRow, int column, string name, string code)
+    {
+        var current = TextUtils.NormalizeKey(
+            TextUtils.CellToString(ExcelSheetOperations.GetValue(sheet, headerRow, column)));
+        if (current.Length != code.Length + 1 || !current.EndsWith(code, StringComparison.Ordinal) ||
+            !char.IsDigit(current[0]) || string.Equals(current, name.ToLowerInvariant(), StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        ExcelSheetOperations.SetValue(sheet, headerRow, column, name);
+        _logger.Information("Колонка «" + current + "» переподписана в «" + name + "»: очередь мест изменилась.");
+    }
+
     private void AddUnknownReserveWarnings(
         IReadOnlyList<LoadRow> load,
         IReadOnlyDictionary<int, StorageAllocation> allocations,
@@ -684,8 +750,8 @@ internal sealed class ExcelRestockStorageStage
             warnings.Add(new ProcessingWarning(
                 "АЦР " + TextUtils.CellToString(row.PickValues[3]) + ": по комментарию резерва «" + Shorten(reserve.Comment) +
                 "» (" + AllocationText(allocation.UnknownReserves.Sum(r => r.Quantity)) +
-                " шт.) не понять, с какого он места хранения, - из остатков он не вычтен. Проверьте «" +
-                allocation.Text + "».",
+                " шт.) не понять, с какого он места хранения, - из остатков он не вычтен. " +
+                "Проверьте комментарий в резервах и «" + allocation.Text + "».",
                 RestockSchema.LoadSheet + ", строка " + row.ExcelRow,
                 sheetName,
                 ExcelColumn.ToLetters(headers[RestockSchema.Load.Acr]) + row.ExcelRow));
@@ -736,6 +802,7 @@ internal sealed class ExcelRestockStorageStage
     /// <summary>
     /// Лист «из‹место›»: строка на каждый код. «Код с адресов» - код места хранения,
     /// «Количество на этом коде» и «Остаток за вычетом количеств в загрузку» - формулами.
+    /// Городов несколько - на каждый своя строка с его количеством.
     /// </summary>
     private object WritePickSheet(
         object workbookObject,
@@ -747,6 +814,7 @@ internal sealed class ExcelRestockStorageStage
         IReadOnlyDictionary<int, LoadRow> rows,
         IReadOnlyDictionary<int, StorageAllocation> allocations,
         PlaceStock stock,
+        IReadOnlyList<RestockCity> cities,
         ComScope scope,
         List<ProcessingWarning> warnings)
     {
@@ -762,7 +830,9 @@ internal sealed class ExcelRestockStorageStage
         var onCodeColumn = pick.Count + 2;
         var restColumn = pick.Count + 3;
         var supplyColumn = StoragePlaces.IsSupply(place) ? pick.Count + 4 : (int?)null;
-        var placeColumn = (supplyColumn ?? restColumn) + 1;
+        var cityColumn = cities.Count > 0 ? (supplyColumn ?? restColumn) + 1 : (int?)null;
+        var noteColumn = (cityColumn ?? supplyColumn ?? restColumn) + 1;
+        var placeColumn = noteColumn + 1;
 
         SetHeader(sheet, codeColumn, "Код с адресов " + StoragePlaces.Code(place));
         SetHeader(sheet, onCodeColumn, "Количество на этом коде");
@@ -772,6 +842,12 @@ internal sealed class ExcelRestockStorageStage
             SetHeader(sheet, supplyHeader, "Поставка");
         }
 
+        if (cityColumn is { } cityHeader)
+        {
+            SetHeader(sheet, cityHeader, "Город");
+        }
+
+        SetHeader(sheet, noteColumn, HeaderText(loadSheet, loadHeaders, RestockSchema.Load.Note));
         SetHeader(sheet, placeColumn, RestockSchema.Load.Place);
 
         for (var c = 0; c < pick.Count; c++)
@@ -791,6 +867,12 @@ internal sealed class ExcelRestockStorageStage
             WriteColumn(sheet, 2, supply, lines.Select(line => NullIfEmpty(line.SupplyNumber)).ToList());
         }
 
+        if (cityColumn is { } city)
+        {
+            WriteColumn(sheet, 2, city, lines.Select(line => NullIfEmpty(line.City)).ToList());
+        }
+
+        WriteColumn(sheet, 2, noteColumn, lines.Select(line => NullIfEmpty(rows[line.RowIndex].Note)).ToList());
         WriteColumn(sheet, 2, placeColumn, lines.Select(line => (object?)allocations[line.RowIndex].Text).ToList());
 
         var last = lines.Count + 1;
@@ -798,9 +880,13 @@ internal sealed class ExcelRestockStorageStage
         SetRangeFormula(
             sheet, 2, last, onCodeColumn,
             "=SUMIFS(" + Column(stock.Sheet, stock.QuantityColumn) + "," + Column(stock.Sheet, stock.CodeColumn) + "," + codeLetter + "2)");
+        // Из остатка кода вычитается всё, что уходит с него в загрузку: один код может стоять
+        // в нескольких строках - у разных городов и когда количество разнесено по кодам.
+        var takenLetter = ExcelColumn.ToLetters(quantityIndex + 1);
         SetRangeFormula(
             sheet, 2, last, restColumn,
-            "=" + ExcelColumn.ToLetters(onCodeColumn) + "2-" + ExcelColumn.ToLetters(quantityIndex + 1) + "2");
+            "=" + ExcelColumn.ToLetters(onCodeColumn) + "2-SUMIFS($" + takenLetter + ":$" + takenLetter +
+            ",$" + codeLetter + ":$" + codeLetter + "," + codeLetter + "2)");
 
         for (var i = 0; i < lines.Count; i++)
         {
@@ -813,12 +899,19 @@ internal sealed class ExcelRestockStorageStage
                 _ => (int?)null,
             };
 
-            if (fill is { } color)
+            // Строка ждёт согласования - вся жёлтая; чем примечателен её код, видно
+            // по заливке самой ячейки с кодом.
+            if (rows[line.RowIndex].NeedsApproval)
             {
-                using var fillScope = new ComScope();
-                dynamic range = fillScope.Track(((dynamic)sheet).Range[Reference(excelRow, 1, excelRow, placeColumn)]);
-                dynamic interior = fillScope.Track(range.Interior);
-                interior.Color = color;
+                FillRange(sheet, excelRow, 1, excelRow, placeColumn, ApprovalFill);
+                if (fill is { } codeColor)
+                {
+                    FillRange(sheet, excelRow, codeColumn, excelRow, codeColumn, codeColor);
+                }
+            }
+            else if (fill is { } color)
+            {
+                FillRange(sheet, excelRow, 1, excelRow, placeColumn, color);
             }
 
             if (line.Shortage > 0d)
@@ -834,33 +927,49 @@ internal sealed class ExcelRestockStorageStage
 
         FinishSheet(sheet, last, placeColumn);
         _logger.Information(
-            "Лист «" + name + "»: строк " + lines.Count + ", другой код " + lines.Count(l => l.Mark == PickMark.ReplacedCode) +
+            "Лист «" + name + "»: строк " + lines.Count +
+            ", на согласовании " + lines.Count(l => rows[l.RowIndex].NeedsApproval) +
+            ", другой код " + lines.Count(l => l.Mark == PickMark.ReplacedCode) +
             ", разнесено по кодам " + lines.Count(l => l.Mark == PickMark.SplitCode) + ".");
         return sheet;
     }
 
-    /// <summary>Загрузочник: «Код», «Подразделение», «Количество», «Цена», «Комментарий», «Номер заказа».</summary>
+    /// <summary>
+    /// Загрузочник: «Код», «Подразделение», «Количество», «Цена», «Комментарий», «Номер заказа»
+    /// и «Согласование» - в ней подписаны строки, которые ещё не согласованы.
+    /// Комментарий у каждого города свой, номер заказа - тоже.
+    /// </summary>
     private object WriteLoader(
         object workbookObject,
         object anchor,
         RestockLoader loader,
         IReadOnlyDictionary<int, LoadRow> rows,
         IReadOnlyDictionary<string, string> divisionGroups,
+        IReadOnlyList<RestockCity> cities,
         ComScope scope)
     {
         var sheet = ExcelSheetOperations.AddSheet(workbookObject, anchor, loader.SheetName, scope);
         var first = rows[loader.Lines[0].RowIndex];
         var clientCode = TextUtils.CellToString(first.ClientCode);
         divisionGroups.TryGetValue(TextUtils.NormalizeKey(clientCode), out var group);
+        var marketplace = RestockLoaderBuilder.MarketplaceName(clientCode, group);
 
-        var comment = RestockLoaderBuilder.CommentText(
-            RestockLoaderBuilder.MarketplaceName(clientCode, group),
-            loader.Lines.Select(line => rows[line.RowIndex].Sector),
-            loader.Place,
-            loader.Lines.Select(line => line.SupplyNumber),
-            loader.Lines.Select(line => rows[line.RowIndex].Priority));
+        // Номера поставок в комментарии нужны там, откуда их забирают: на МПП и СЗП.
+        var comments = loader.Lines
+            .GroupBy(line => line.City, StringComparer.Ordinal)
+            .ToDictionary(
+                cityLines => cityLines.Key,
+                cityLines => RestockLoaderBuilder.CommentText(
+                    marketplace,
+                    cityLines.Key,
+                    loader.Comment,
+                    cityLines.Where(line => StoragePlaces.IsSupply(line.Place)).Select(line => line.SupplyNumber),
+                    cityLines.Select(line => rows[line.RowIndex].Priority)),
+                StringComparer.Ordinal);
 
-        var headers = new[] { "Код", "Подразделение", "Количество", "Цена", "Комментарий", "Номер заказа" };
+        var orders = RestockLoaderBuilder.OrderNumbers(loader, cities.Select(city => city.Name).ToList());
+
+        var headers = new[] { "Код", "Подразделение", "Количество", "Цена", "Комментарий", "Номер заказа", "Согласование" };
         for (var c = 0; c < headers.Length; c++)
         {
             SetHeader(sheet, c + 1, headers[c]);
@@ -870,11 +979,27 @@ internal sealed class ExcelRestockStorageStage
         WriteColumn(sheet, 2, 2, loader.Lines.Select(line => rows[line.RowIndex].ClientCode).ToList());
         WriteColumn(sheet, 2, 3, loader.Lines.Select(line => (object?)line.Quantity).ToList());
         WriteColumn(sheet, 2, 4, loader.Lines.Select(line => rows[line.RowIndex].Price).ToList());
-        WriteColumn(sheet, 2, 5, loader.Lines.Select(_ => (object?)comment).ToList());
-        WriteColumn(sheet, 2, 6, loader.Lines.Select(_ => (object?)1d).ToList());
+        WriteColumn(sheet, 2, 5, loader.Lines.Select(line => (object?)comments[line.City]).ToList());
+        WriteColumn(sheet, 2, 6, orders.Select(number => (object?)number).ToList());
+        WriteColumn(
+            sheet, 2, 7,
+            loader.Lines.Select(line => rows[line.RowIndex].NeedsApproval ? (object?)ApprovalNote : null).ToList());
+
+        var approval = 0;
+        for (var i = 0; i < loader.Lines.Count; i++)
+        {
+            if (rows[loader.Lines[i].RowIndex].NeedsApproval)
+            {
+                FillRange(sheet, i + 2, 1, i + 2, headers.Length, ApprovalFill);
+                approval++;
+            }
+        }
 
         ExcelSheetOperations.AutoFitColumns(sheet, 1, headers.Length);
-        _logger.Information("Загрузочник «" + loader.SheetName + "»: строк " + loader.Lines.Count + ". " + comment);
+        _logger.Information(
+            "Загрузочник «" + loader.SheetName + "»: строк " + loader.Lines.Count +
+            (approval > 0 ? ", на согласовании " + approval : string.Empty) + ". " +
+            string.Join(" | ", comments.Values));
         return sheet;
     }
 
@@ -890,10 +1015,12 @@ internal sealed class ExcelRestockStorageStage
                 .Select(line => rows[line.RowIndex].Sector)
                 .Where(sector => sector.Length > 0)
                 .Distinct(StringComparer.OrdinalIgnoreCase));
+            var approval = loader.Lines.Count(line => rows[line.RowIndex].NeedsApproval);
 
             warnings.Add(new ProcessingWarning(
                 "Загрузочник «" + loader.SheetName + "»: строк " + loader.Lines.Count + ", " + AllocationText(quantity) + " шт." +
                 (sectors.Length > 0 ? " (" + sectors + ")" : string.Empty) +
+                (approval > 0 ? ", из них на согласовании " + approval : string.Empty) +
                 ". Проверьте, можно ли столько передать на склад, не объединить ли с другим заказом, и текст комментария.",
                 loader.SheetName,
                 loader.SheetName,
@@ -1173,6 +1300,14 @@ internal sealed class ExcelRestockStorageStage
     {
         var letters = ExcelColumn.ToLetters(column);
         return "'" + sheet.Replace("'", "''", StringComparison.Ordinal) + "'!$" + letters + ":$" + letters;
+    }
+
+    private static void FillRange(object sheet, int firstRow, int firstColumn, int lastRow, int lastColumn, int color)
+    {
+        using var scope = new ComScope();
+        dynamic range = scope.Track(((dynamic)sheet).Range[Reference(firstRow, firstColumn, lastRow, lastColumn)]);
+        dynamic interior = scope.Track(range.Interior);
+        interior.Color = color;
     }
 
     private static void SetRangeFormula(object sheet, int firstRow, int lastRow, int column, string formula)

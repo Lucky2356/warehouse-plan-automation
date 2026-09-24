@@ -10,9 +10,10 @@ public class RestockBanRulesTests
         object? ban = null,
         double? quantity = 20d,
         double? available = 100d,
-        double? sellout = 0d,
-        string sector = "ОБУВЬ") =>
-        new(0, sector, "369-146РОЗОВЫЙXS", quantity, ban, available, sellout);
+        string sector = "ОБУВЬ",
+        string group = "КЕДЫ",
+        string article = "369-146") =>
+        new(0, sector, group, article, article + "РОЗОВЫЙXS", quantity, ban, available);
 
     // ===== «Отгрузка в рамках заказа МП, запрет забора из розницы» =====
 
@@ -53,7 +54,7 @@ public class RestockBanRulesTests
     private const string NoRetail = "Запрет забора из розницы";
 
     [Fact]
-    public void ЗапретРозницы_ОбычныйСектор_НаСогласование()
+    public void ЗапретРозницы_НаСогласование()
     {
         var decision = RestockBanRules.Decide(Row(ban: NoRetail, sector: "ОБУВЬ"));
 
@@ -62,18 +63,59 @@ public class RestockBanRulesTests
         Assert.True(decision.NeedsApproval);
     }
 
+    [Fact]
+    public void ЗапретРозницы_БезЛистаИсключений_СогласовываетсяВсё()
+    {
+        // Зашитых секторов больше нет: пока лист «Исключения» не заведён, исключений нет.
+        var decision = RestockBanRules.Decide(Row(ban: NoRetail, sector: "БИЖУТЕРИЯ"));
+
+        Assert.Equal(RestockSchema.NoteApprove, decision.Note);
+        Assert.True(decision.NeedsApproval);
+    }
+
+    // ===== Лист «Исключения» =====
+
     [Theory]
     [InlineData("БИЖУТЕРИЯ")]
-    [InlineData("МЕЛКИЕ АКСЕССУАРЫ")]
-    [InlineData("мелкие аксессуары")]
-    [InlineData("УКРАШЕНИЯ ДЛЯ ВОЛОС")]
-    public void ЗапретРозницы_МелочьНеСогласовывается(string sector)
+    [InlineData("бижутерия")]
+    [InlineData("КЕДЫ")]
+    [InlineData("369-146")]
+    [InlineData("369-146РОЗОВЫЙXS")]
+    [InlineData("369-146РОЗОВЫЙ")]
+    public void Исключения_ОтдаёмБезСогласования(string value)
     {
-        var decision = RestockBanRules.Decide(Row(ban: NoRetail, sector: sector));
+        var exceptions = new RestockExceptions(new[] { value });
+        var decision = RestockBanRules.Decide(Row(ban: NoRetail, sector: "БИЖУТЕРИЯ"), exceptions);
 
         Assert.Equal(RestockSchema.NoteOk, decision.Note);
-        Assert.True(decision.Highlight);
         Assert.False(decision.NeedsApproval);
+    }
+
+    [Fact]
+    public void Исключения_ЧужиеЗначенияНеПодходят()
+    {
+        var exceptions = new RestockExceptions(new[] { "СУМКИ", "800-100" });
+        var decision = RestockBanRules.Decide(Row(ban: NoRetail), exceptions);
+
+        Assert.Equal(RestockSchema.NoteApprove, decision.Note);
+    }
+
+    [Fact]
+    public void Исключения_ДопСоглВсёРавноСогласовывается()
+    {
+        // «доп согл» проверяется раньше исключений: разговор нужен в любом случае.
+        var exceptions = new RestockExceptions(new[] { "ОБУВЬ" });
+        var decision = RestockBanRules.Decide(Row(ban: "запрет, доп согл"), exceptions);
+
+        Assert.Equal(RestockSchema.NoteApprove, decision.Note);
+    }
+
+    [Fact]
+    public void Исключения_КороткоеЗначениеНеЛовитВесьАцр()
+    {
+        var exceptions = new RestockExceptions(new[] { "369" });
+
+        Assert.False(exceptions.Covers("ОБУВЬ", "КЕДЫ", "369-146", "369-146РОЗОВЫЙXS"));
     }
 
     // ===== «#н/д» =====
@@ -113,65 +155,36 @@ public class RestockBanRulesTests
     }
 
     [Fact]
-    public void ПустойЗапрет_РовноНоль_ВысокийSellout_НаСогласование()
+    public void ПустойЗапрет_РовноНоль_Ок()
     {
-        var decision = RestockBanRules.Decide(Row(quantity: 20d, available: 20d, sellout: 80d));
-
-        Assert.Equal(RestockSchema.NoteApprove, decision.Note);
-        Assert.True(decision.NeedsApproval);
-        Assert.False(decision.Highlight);
-    }
-
-    [Fact]
-    public void ПустойЗапрет_РовноНоль_НизкийSellout_Ок()
-    {
-        var decision = RestockBanRules.Decide(Row(quantity: 20d, available: 20d, sellout: 79.9d));
+        // Разница ноль - хватает ровно столько, сколько просят.
+        var decision = RestockBanRules.Decide(Row(quantity: 20d, available: 20d));
 
         Assert.Equal(RestockSchema.NoteOk, decision.Note);
         Assert.False(decision.NeedsApproval);
-    }
-
-    [Fact]
-    public void ПустойЗапрет_РовноНоль_ВысокийSellout_НоМелочь_Ок()
-    {
-        var decision = RestockBanRules.Decide(
-            Row(quantity: 20d, available: 20d, sellout: 100d, sector: "БИЖУТЕРИЯ"));
-
-        Assert.Equal(RestockSchema.NoteOk, decision.Note);
-        Assert.False(decision.NeedsApproval);
-    }
-
-    [Fact]
-    public void ПустойЗапрет_РовноНоль_БезSellout_ОставляетОкИДаётЗамечание()
-    {
-        // Утверждать, что sellout высокий, не из чего: строка остаётся «Ок»,
-        // но замечание о непрочитанном sellout пишется.
-        var decision = RestockBanRules.Decide(Row(quantity: 20d, available: 20d, sellout: null));
-
-        Assert.Equal(RestockSchema.NoteOk, decision.Note);
-        Assert.False(decision.NeedsApproval);
-        Assert.NotNull(decision.Problem);
+        Assert.Null(decision.Problem);
     }
 
     [Theory]
     [InlineData(null)]
     [InlineData(0d)]
-    public void ПустойЗапрет_СобиратьНечего_РешаетSellout(double? available)
+    public void ПустойЗапрет_СобиратьНечего_Ок(double? available)
     {
-        // Разница считается только там, где «Фактическое кол-во» заполнено:
-        // так и делает аналитик, фильтруя лист по непустым значениям этой колонки.
-        var low = RestockBanRules.Decide(Row(quantity: 20d, available: available, sellout: 5d));
-        var high = RestockBanRules.Decide(Row(quantity: 20d, available: available, sellout: 95d));
-        var small = RestockBanRules.Decide(
-            Row(quantity: 20d, available: available, sellout: 95d, sector: "БИЖУТЕРИЯ"));
+        // Разница считается только там, где «Фактическое кол-во» заполнено: так и делает
+        // аналитик, фильтруя лист по непустым значениям этой колонки.
+        var decision = RestockBanRules.Decide(Row(quantity: 20d, available: available));
 
-        Assert.Equal(RestockSchema.NoteOk, low.Note);
-        Assert.False(low.NeedsApproval);
+        Assert.Equal(RestockSchema.NoteOk, decision.Note);
+        Assert.False(decision.NeedsApproval);
+    }
 
-        Assert.Equal(RestockSchema.NoteApprove, high.Note);
-        Assert.Contains("собрать на ВБ+Озон нечего", high.Reason);
+    [Fact]
+    public void ПустойЗапрет_НетКоличества_РешенияНет()
+    {
+        var decision = RestockBanRules.Decide(Row(quantity: null));
 
-        Assert.Equal(RestockSchema.NoteOk, small.Note);
+        Assert.Equal(string.Empty, decision.Note);
+        Assert.NotNull(decision.Problem);
     }
 
     // ===== «доп согл» =====

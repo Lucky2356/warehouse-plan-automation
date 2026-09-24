@@ -130,7 +130,8 @@ public sealed class ExcelRestockProcessor : IWorkbookProcessor
 
             cancellationToken.ThrowIfCancellationRequested();
             Report(progress, "Разбор колонки «Запрет»", 30);
-            var decisions = rows.Select(RestockBanRules.Decide).ToList();
+            var exceptions = ReadExceptions((object)workbook, scope);
+            var decisions = rows.Select(row => RestockBanRules.Decide(row, exceptions)).ToList();
 
             Report(progress, "Заполнение «Заметки»", 35);
             Apply(sheet, layout, rows, decisions);
@@ -257,34 +258,63 @@ public sealed class ExcelRestockProcessor : IWorkbookProcessor
         return created.Count > 0;
     }
 
-    /// <summary>
-    /// «Прогнозный sellout» приводится к процентам: в книге колонка в процентном формате,
-    /// и 80 % лежит в ячейке как 0,8. Если формат обычный, число уже в процентах.
-    /// </summary>
     private static IReadOnlyList<RestockRow> ReadRows(object sheet, LoadLayout layout)
     {
         var headers = layout.Headers;
         var grid = ExcelSheetOperations.ReadBlock(
             sheet, layout.FirstRow, layout.LastRow, layout.Columns.First, layout.Columns.Last, withFormulas: false);
 
-        var selloutColumn = headers[RestockSchema.Load.Sellout];
-        var asFraction = ExcelSheetOperations.IsPercentFormat(sheet, layout.FirstRow, selloutColumn);
-
         var rows = new List<RestockRow>(layout.Count);
         for (var row = layout.FirstRow; row <= layout.LastRow; row++)
         {
-            var sellout = grid.Number(row, selloutColumn);
+            // Ошибка формулы в «в подтоварку» («#ССЫЛКА!») количеством не считается:
+            // строка останется без решения и попадёт в замечания.
+            var quantity = grid.Value(row, headers[RestockSchema.Load.Quantity]);
+
             rows.Add(new RestockRow(
                 row - layout.FirstRow,
                 TextUtils.Normalize(grid.Text(row, headers[RestockSchema.Load.Sector])),
+                TextUtils.Normalize(grid.Text(row, headers[RestockSchema.Load.Group])),
+                TextUtils.Normalize(grid.Text(row, headers[RestockSchema.Load.Article])),
                 TextUtils.Normalize(grid.Text(row, headers[RestockSchema.Load.Acr])),
-                grid.Number(row, headers[RestockSchema.Load.Quantity]),
+                CellError.IsError(quantity) ? null : TextUtils.CellToDouble(quantity),
                 grid.Value(row, headers[RestockSchema.Load.Ban]),
-                grid.Value(row, headers[RestockSchema.Load.Available]),
-                sellout is null ? null : asFraction ? sellout * 100d : sellout));
+                grid.Value(row, headers[RestockSchema.Load.Available])));
         }
 
         return rows;
+    }
+
+    /// <summary>
+    /// Лист «Исключения»: всё, что на нём написано, - секторы, группы, артикулы и АЦР,
+    /// которые отдаём без согласования. Листа нет - исключений нет.
+    /// </summary>
+    private RestockExceptions ReadExceptions(object workbook, ComScope scope)
+    {
+        var sheet = ExcelSheetOperations.FindSheet(workbook, RestockSchema.ExceptionsSheet, scope).Sheet;
+        if (sheet is null)
+        {
+            _logger.Information("Листа «" + RestockSchema.ExceptionsSheet + "» в книге нет: исключений нет.");
+            return RestockExceptions.Empty;
+        }
+
+        var bounds = ExcelSheetOperations.GetUsedBounds(sheet);
+        var grid = ExcelSheetOperations.ReadBlock(
+            sheet, bounds.FirstRow, bounds.LastRow, bounds.FirstColumn, bounds.LastColumn, withFormulas: false);
+
+        var values = new List<string>();
+        for (var row = bounds.FirstRow; row <= bounds.LastRow; row++)
+        {
+            for (var column = bounds.FirstColumn; column <= bounds.LastColumn; column++)
+            {
+                values.Add(TextUtils.Normalize(grid.Text(row, column)));
+            }
+        }
+
+        var exceptions = new RestockExceptions(values);
+        _logger.Information(
+            "Лист «" + RestockSchema.ExceptionsSheet + "»: значений без согласования " + exceptions.Count + ".");
+        return exceptions;
     }
 
     // ================= Запись =================
@@ -406,7 +436,8 @@ public sealed class ExcelRestockProcessor : IWorkbookProcessor
         // 100 % превратились бы в единицу.
         var sellout = columns.IndexOf(RestockSchema.Load.Sellout);
         if (sellout >= 0 &&
-            ExcelSheetOperations.IsPercentFormat(loadSheet, layout.FirstRow, headers[RestockSchema.Load.Sellout]))
+            headers.TryGet(RestockSchema.Load.Sellout, out var selloutColumn) &&
+            ExcelSheetOperations.IsPercentFormat(loadSheet, layout.FirstRow, selloutColumn))
         {
             ExcelSheetOperations.SetColumnFormat(sheet, sellout + 1, "0%");
         }

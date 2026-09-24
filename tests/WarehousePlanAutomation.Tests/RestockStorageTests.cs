@@ -1,4 +1,6 @@
+using WarehousePlanAutomation.Core.Models;
 using WarehousePlanAutomation.Core.Processing;
+using WarehousePlanAutomation.Core.Sheets;
 using Xunit;
 
 namespace WarehousePlanAutomation.Tests;
@@ -34,11 +36,12 @@ public class StoragePlacesTests
     [Fact]
     public void КолонкиИЛисты()
     {
+        // Цифра - очередь, в которой место берётся: МП, МПП, В, А, СЗП.
         Assert.Equal("1МП", StoragePlaces.LoadColumn(StoragePlace.Marketplace));
         Assert.Equal("2МПП", StoragePlaces.LoadColumn(StoragePlace.Supplies));
-        Assert.Equal("3А", StoragePlaces.LoadColumn(StoragePlace.Storage));
-        Assert.Equal("4СЗП", StoragePlaces.LoadColumn(StoragePlace.NetworkSupplies));
-        Assert.Equal("5В", StoragePlaces.LoadColumn(StoragePlace.Returns));
+        Assert.Equal("3В", StoragePlaces.LoadColumn(StoragePlace.Returns));
+        Assert.Equal("4А", StoragePlaces.LoadColumn(StoragePlace.Storage));
+        Assert.Equal("5СЗП", StoragePlaces.LoadColumn(StoragePlace.NetworkSupplies));
         Assert.Equal("измпп", StoragePlaces.PickSheet(StoragePlace.Supplies));
         Assert.Equal("иза", StoragePlaces.PickSheet(StoragePlace.Storage));
     }
@@ -90,7 +93,7 @@ public class StorageAllocatorTests
     private static ReserveLine[] Reserve(double quantity, string comment) => new[] { new ReserveLine(quantity, comment) };
 
     [Fact]
-    public void ОдноМесто_ПоОчередиМпМппАСзпВ()
+    public void ОдноМесто_ПоОчередиМпМппВАСзп()
     {
         // МП не хватает, МПП хватает с запасом - берём с МПП, хотя на «А» товара больше.
         var allocation = StorageAllocator.Allocate(50, Stock(mp: 45, mpp: 1380, a: 2584), Array.Empty<ReserveLine>());
@@ -100,16 +103,34 @@ public class StorageAllocatorTests
     }
 
     [Fact]
+    public void ОдноМесто_ВозвратыРаньшеХранения()
+    {
+        var allocation = StorageAllocator.Allocate(5, Stock(a: 300, v: 20), Array.Empty<ReserveLine>());
+
+        Assert.Equal("В", allocation.Text);
+    }
+
+    [Fact]
     public void ОдноМесто_ВсеРезервыАцрВычитаются()
     {
         // 5 на МП минус 10 резерва не хватит, а на «А» 72 - 10 - 5 = 57.
-        var allocation = StorageAllocator.Allocate(5, Stock(mp: 5, a: 72, v: 7), Reserve(10, "Пуховики_из возвратов, времянки"));
+        var allocation = StorageAllocator.Allocate(5, Stock(mp: 5, a: 72), Reserve(10, "Заказ интерент магазина № Т143437"));
 
         Assert.Equal("А", allocation.Text);
     }
 
     [Fact]
-    public void ПримерИнструкции_НаОбразцы_РезервНеВычитается()
+    public void НаОбразцы_ВычитаетсяИзПоставок()
+    {
+        // На образцы и на фото берут с поставок: резерв съедает МПП, и товар идёт с «В».
+        var allocation = StorageAllocator.Allocate(
+            5, Stock(mpp: 5, v: 5), Reserve(5, "на образцы, хранение на складе СЗ2437-029 (кеды)"));
+
+        Assert.Equal("В", allocation.Text);
+    }
+
+    [Fact]
+    public void НаОбразцы_БезПоставокНиЧегоНеСъедает()
     {
         var allocation = StorageAllocator.Allocate(
             15, Stock(mp: 10, a: 5), Reserve(1, "на образцы, хранение на складе СЗ2437-029 (кеды)"));
@@ -151,12 +172,13 @@ public class StorageAllocatorTests
     }
 
     [Fact]
-    public void Опт_МожетВзятьОткудаУгодно()
+    public void Опт_ВычитаетсяСЛюбогоМеста()
     {
-        var allocation = StorageAllocator.Allocate(2, Stock(v: 2), Reserve(26, "Опт, головные уборы, палантины"));
+        // Резерв опта в 3 шт. снимается с МП, и до нужных 5 добирают с возвратов.
+        var allocation = StorageAllocator.Allocate(5, Stock(mp: 3, v: 4), Reserve(3, "Опт, головные уборы, палантины"));
 
-        Assert.Equal("В", allocation.Text);
-        Assert.True(allocation.SinglePlace);
+        Assert.Equal("В4", allocation.Text);
+        Assert.Equal(1d, allocation.Missing);
     }
 
     [Fact]
@@ -259,16 +281,69 @@ public class RestockLoaderBuilderTests
     }
 
     [Fact]
-    public void КомментарийЗагрузочника()
+    public void КомментарийЗагрузочника_ПоставкиНазываютсяНомерами()
     {
         var text = RestockLoaderBuilder.CommentText(
             "Lamoda",
-            new[] { "СУМКИ", "ОБУВЬ", "СУМКИ" },
-            StoragePlace.NetworkSupplies,
+            string.Empty,
+            "любой",
             new[] { "С318-156", "С2437-027", "С318-156" },
             new[] { "к 17.09", "к 17.09" });
 
-        Assert.Equal("Lamoda Подтоварка Сумки, Обувь из С318-156, С2437-027 Приоритет к 17.09", text);
+        Assert.Equal("Lamoda Подтоварка Любой из С318-156, С2437-027 Приоритет к 17.09", text);
+    }
+
+    [Fact]
+    public void КомментарийЗагрузочника_СГородом()
+    {
+        var text = RestockLoaderBuilder.CommentText(
+            "Ozon", "Мск", "микс", Array.Empty<string>(), new[] { "к 28.09" });
+
+        Assert.Equal("Ozon Мск Подтоварка Микс Приоритет к 28.09", text);
+    }
+
+    [Fact]
+    public void Подразделение206_ЗагрузочникиТолькоПоКоментам()
+    {
+        var comments = new[] { "микс", "крупное", "микс" };
+        var lines = new[]
+        {
+            new PickLine(0, StoragePlace.Storage, "1", 1, 1, "", PickMark.None),
+            new PickLine(1, StoragePlace.Marketplace, "2", 1, 1, "", PickMark.None),
+            new PickLine(2, StoragePlace.Returns, "3", 1, 1, "", PickMark.None),
+        };
+
+        var loaders = RestockLoaderBuilder.Build(lines, index => comments[index], mergePlaces: true);
+
+        Assert.Equal(new[] { "З-микс", "З-крупное" }, loaders.Select(l => l.SheetName));
+        Assert.Equal(2, loaders[0].Lines.Count);
+        Assert.Null(loaders[0].Place);
+    }
+
+    [Fact]
+    public void НомерЗаказа_ПоГородам()
+    {
+        var loader = new RestockLoader("З-микс", null, "микс", new[]
+        {
+            new PickLine(0, StoragePlace.Marketplace, "1", 5, 5, "", PickMark.None, 0d, "Мск"),
+            new PickLine(0, StoragePlace.Marketplace, "1", 2, 5, "", PickMark.None, 0d, "Спб"),
+            new PickLine(0, StoragePlace.Marketplace, "1", 1, 5, "", PickMark.None, 0d, "Екб"),
+        });
+
+        Assert.Equal(new[] { 1d, 2d, 3d }, RestockLoaderBuilder.OrderNumbers(loader, new[] { "Мск", "Спб", "Екб" }));
+    }
+
+    [Fact]
+    public void НомерЗаказа_МоноЗаказКаждыйКодОтдельно()
+    {
+        var loader = new RestockLoader("З-моно", null, "МОНО заказ", new[]
+        {
+            new PickLine(0, StoragePlace.Marketplace, "154267", 5, 5, "", PickMark.None),
+            new PickLine(1, StoragePlace.Marketplace, "154268", 3, 3, "", PickMark.None),
+            new PickLine(2, StoragePlace.Marketplace, "154267", 2, 5, "", PickMark.None),
+        });
+
+        Assert.Equal(new[] { 1d, 2d, 1d }, RestockLoaderBuilder.OrderNumbers(loader, Array.Empty<string>()));
     }
 
     [Fact]
@@ -278,13 +353,6 @@ public class RestockLoaderBuilderTests
         Assert.Equal("к 07.09.2026", RestockLoaderBuilder.PriorityText(new DateTime(2026, 9, 7).ToOADate()));
         Assert.Equal(string.Empty, RestockLoaderBuilder.PriorityText(null));
     }
-
-    [Theory]
-    [InlineData(StoragePlace.Marketplace, "адресов МП")]
-    [InlineData(StoragePlace.Storage, "А1,А2,А3")]
-    [InlineData(StoragePlace.Returns, "Возвратов")]
-    public void МестоВКомментарии(StoragePlace place, string expected) =>
-        Assert.Equal(expected, RestockLoaderBuilder.PlaceText(place, Array.Empty<string>()));
 
     [Theory]
     [InlineData("208", null, "Lamoda")]
@@ -300,14 +368,120 @@ public class ReservePeriodTests
     private static readonly DateTime September = new(2026, 9, 14);
 
     [Theory]
+    [InlineData(2026, 1, 9, true)]
     [InlineData(2026, 7, 1, true)]
     [InlineData(2026, 9, 30, true)]
-    [InlineData(2026, 6, 30, false)]
+    [InlineData(2025, 12, 31, false)]
     [InlineData(2025, 9, 14, false)]
-    public void СентябрьОставляетИюльАвгустСентябрь(int year, int month, int day, bool keep) =>
+    public void ОстаютсяЗаказыТекущегоГода(int year, int month, int day, bool keep) =>
         Assert.Equal(keep, ReservePeriod.Keep(new DateTime(year, month, day), September));
 
     [Fact]
     public void ВЯнвареПрошлыйГодУдаляется() =>
         Assert.False(ReservePeriod.Keep(new DateTime(2026, 12, 20), new DateTime(2027, 1, 10)));
+}
+
+public class PickListCityTests
+{
+    private static PickLine Line(string code, double quantity, double shortage = 0d) =>
+        new(0, StoragePlace.Marketplace, code, quantity, quantity, string.Empty, PickMark.None, shortage);
+
+    [Fact]
+    public void ГородаБерутПоОчереди()
+    {
+        var lines = PickListBuilder.SplitByCity(
+            new[] { Line("a", 6), Line("b", 4) },
+            new[] { ("Мск", 5d), ("Спб", 3d), ("Екб", 2d) });
+
+        Assert.Equal(
+            new[] { ("a", 5d, "Мск"), ("a", 1d, "Спб"), ("b", 2d, "Спб"), ("b", 2d, "Екб") },
+            lines.Select(line => (line.Code, line.Quantity, line.City)));
+    }
+
+    [Fact]
+    public void ПоследнемуГородуНеХватает()
+    {
+        // Собрали только 4 из 7: первый город увозит своё, третьему не достаётся ничего.
+        var lines = PickListBuilder.SplitByCity(
+            new[] { Line("a", 4) }, new[] { ("Мск", 3d), ("Спб", 2d), ("Екб", 2d) });
+
+        Assert.Equal(new[] { ("Мск", 3d), ("Спб", 1d) }, lines.Select(line => (line.City, line.Quantity)));
+    }
+
+    [Fact]
+    public void ОстатокДостаётсяПоследнемуГороду()
+    {
+        // Количество по городам меньше собранного - разницу нельзя потерять.
+        var lines = PickListBuilder.SplitByCity(new[] { Line("a", 5) }, new[] { ("Мск", 2d) });
+
+        var line = Assert.Single(lines);
+        Assert.Equal((5d, "Мск"), (line.Quantity, line.City));
+    }
+
+    [Fact]
+    public void БезГородов_СтрокиНеМеняются()
+    {
+        var source = new[] { Line("a", 5) };
+
+        Assert.Same(source, PickListBuilder.SplitByCity(source, Array.Empty<(string, double)>()));
+    }
+}
+
+public class RestockQuantityTests
+{
+    private static SheetGrid Headers(params string[] titles) =>
+        SheetGrid.FromRows(1, 1, new List<object?[]> { titles.Cast<object?>().ToArray() });
+
+    [Fact]
+    public void ОдинГород_ОднаКолонкаВПодтоварку()
+    {
+        var layout = RestockSchema.Load.ResolveQuantity(Headers("Код", "в подтоварку ", "комент"), 1);
+
+        Assert.Equal(2, layout.Total);
+        Assert.Empty(layout.Cities);
+    }
+
+    [Fact]
+    public void ОдинГород_КолонкаПодписанаСкладом()
+    {
+        var layout = RestockSchema.Load.ResolveQuantity(Headers("Код", "в подтоварку Мск", "комент"), 1);
+
+        Assert.Equal(2, layout.Total);
+        Assert.Empty(layout.Cities);
+    }
+
+    [Fact]
+    public void НесколькоГородов_СчитаемПоИтогу()
+    {
+        var layout = RestockSchema.Load.ResolveQuantity(
+            Headers("Код", "Склад Мск", "Склад Спб", "Склад Екб", "Итого на МП", "комент"), 1);
+
+        Assert.Equal(5, layout.Total);
+        Assert.Equal(new[] { "Мск", "Спб", "Екб" }, layout.Cities.Select(city => city.Name));
+        Assert.Equal(new[] { 2, 3, 4 }, layout.Cities.Select(city => city.Column));
+    }
+
+    [Fact]
+    public void НесколькоГородов_КолонкиВПодтоварку()
+    {
+        var layout = RestockSchema.Load.ResolveQuantity(
+            Headers("Итого в подтоварку", "в подтоварку МСК", "в подтоварку НСК"), 1);
+
+        Assert.Equal(1, layout.Total);
+        Assert.Equal(new[] { "МСК", "НСК" }, layout.Cities.Select(city => city.Name));
+    }
+
+    [Fact]
+    public void НесколькоГородовБезИтога_Останавливаемся()
+    {
+        var error = Assert.Throws<WorkbookValidationException>(() =>
+            RestockSchema.Load.ResolveQuantity(Headers("в подтоварку МСК", "в подтоварку НСК"), 1));
+
+        Assert.Contains("Итого в подтоварку", string.Join(" ", error.Problems));
+    }
+
+    [Fact]
+    public void КолонкиНет_Останавливаемся() =>
+        Assert.Throws<WorkbookValidationException>(() =>
+            RestockSchema.Load.ResolveQuantity(Headers("Код", "комент"), 1));
 }

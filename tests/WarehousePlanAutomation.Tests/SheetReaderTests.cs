@@ -116,15 +116,25 @@ public class SheetReaderTests
     [Theory]
     [InlineData("в подтоварку Мск", "в подтоварку Нск")]
     [InlineData("в подтоварку", "в подтоварку МСК")]
-    public void Подтоварка_ДвеКолонкиПоСкладам_ОстановкаСОбъяснением(string first, string second)
+    public void Подтоварка_ДвеКолонкиБезИтога_ОстановкаСОбъяснением(string first, string second)
     {
-        // Молча взять одну из колонок нельзя: количество другого склада потерялось бы.
+        // Молча взять одну из колонок нельзя: количество другого города потерялось бы.
         var error = Assert.Throws<WorkbookValidationException>(() =>
             RestockSchema.Load.ResolveHeaders(LoadSheetHeaders("комент", first, second)));
 
         var problem = Assert.Single(error.Problems);
         Assert.Contains("«" + first + "»", problem);
         Assert.Contains("«" + second + "»", problem);
+        Assert.Contains("Итого в подтоварку", problem);
+    }
+
+    [Fact]
+    public void Подтоварка_ГородаСИтогом_СчитаемПоИтогу()
+    {
+        var headers = RestockSchema.Load.ResolveHeaders(
+            LoadSheetHeaders("комент", "Итого в подтоварку", "в подтоварку Мск"));
+
+        Assert.Equal(10, headers[RestockSchema.Load.Quantity]);
     }
 
     [Theory]
@@ -190,19 +200,36 @@ public class SheetReaderTests
     [Fact]
     public void Подтоварка_БезОбязательнойКолонки_ЖалуетсяТолькоНаНеё()
     {
-        // «Заметки» и «Проверка» необязательны и в список пропавших не попадают.
+        // «Заметки», «Проверка» и «Прогнозный sellout» необязательны и в список пропавших
+        // не попадают.
         var error = Assert.Throws<WorkbookValidationException>(() => RestockSchema.Load.ResolveHeaders(
             SheetGrid.FromRows(1, 1, new List<object?[]>
             {
                 new object?[]
                 {
                     "Код клиента", "Сектор", "Группа", "АЦР", "Артикул", "Цвет", "Размер", "Код", "РЦ",
-                    "в подтоварку", "комент", "Приоритет",
-                    "Фактическое кол-во", "Комментарий (на запрет)",
+                    "в подтоварку", "комент", "Приоритет", "Комментарий (на запрет)",
                 },
             })));
 
-        Assert.Contains("Прогнозный sellout", Assert.Single(error.Problems));
+        Assert.Contains("Фактическое кол-во", Assert.Single(error.Problems));
+    }
+
+    [Fact]
+    public void Подтоварка_БезSellout_КнигаРазбирается()
+    {
+        var headers = RestockSchema.Load.ResolveHeaders(
+            SheetGrid.FromRows(1, 1, new List<object?[]>
+            {
+                new object?[]
+                {
+                    "Код клиента", "Сектор", "Группа", "АЦР", "Артикул", "Цвет", "Размер", "Код", "РЦ",
+                    "в подтоварку", "комент", "Приоритет", "Фактическое кол-во", "Комментарий (на запрет)",
+                },
+            }));
+
+        Assert.False(headers.TryGet(RestockSchema.Load.Sellout, out _));
+        Assert.Equal(10, headers[RestockSchema.Load.Quantity]);
     }
 
     [Fact]

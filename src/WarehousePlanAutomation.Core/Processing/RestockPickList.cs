@@ -22,6 +22,7 @@ public enum PickMark
 
 /// <summary>Строка листа «из‹место›».</summary>
 /// <param name="Shortage">Сколько не хватило на кодах этого места. Больше нуля - сообщить человеку.</param>
+/// <param name="City">Город, которому идёт это количество. Пусто - город один.</param>
 public sealed record PickLine(
     int RowIndex,
     StoragePlace Place,
@@ -30,7 +31,8 @@ public sealed record PickLine(
     double CodeQuantity,
     string SupplyNumber,
     PickMark Mark,
-    double Shortage = 0d);
+    double Shortage = 0d,
+    string City = "");
 
 /// <summary>
 /// Код для строки листа «из‹место›». ВПР по АЦР находит первый код на листе места хранения;
@@ -96,12 +98,73 @@ public static class PickListBuilder
         PickLine Line(StockCode code, double take, PickMark mark, double shortage = 0d) =>
             new(rowIndex, place, code.Code, take, code.Quantity, code.SupplyNumber, mark, shortage);
     }
+
+    /// <summary>
+    /// Раздача собранного по городам: города идут по очереди, каждый берёт своё количество
+    /// из того, что осталось. Предыдущий город для следующего - всё равно что резерв.
+    /// Городов нет - строки остаются как есть.
+    /// </summary>
+    public static IReadOnlyList<PickLine> SplitByCity(
+        IReadOnlyList<PickLine> lines, IReadOnlyList<(string City, double Quantity)> cities)
+    {
+        if (cities.Count == 0 || lines.Count == 0)
+        {
+            return lines;
+        }
+
+        var demand = cities.Select(city => Math.Max(city.Quantity, 0d)).ToArray();
+
+        // Всё, что не разошлось по городам (например, количество урезал разбор «Запрета»),
+        // достаётся последнему городу: терять его нельзя.
+        var collected = lines.Sum(line => line.Quantity);
+        var planned = demand.Sum();
+        if (planned < collected)
+        {
+            demand[^1] += collected - planned;
+        }
+
+        var result = new List<PickLine>();
+        var index = 0;
+        foreach (var line in lines)
+        {
+            var remaining = line.Quantity;
+            var first = true;
+            while (remaining > 0d && index < demand.Length)
+            {
+                if (demand[index] <= 0d)
+                {
+                    index++;
+                    continue;
+                }
+
+                var take = Math.Min(demand[index], remaining);
+                result.Add(line with
+                {
+                    Quantity = take,
+                    City = cities[index].City,
+                    Shortage = first ? line.Shortage : 0d,
+                });
+
+                demand[index] -= take;
+                remaining -= take;
+                first = false;
+            }
+
+            if (remaining > 0d)
+            {
+                result.Add(line with { Quantity = remaining, City = cities[^1].City, Shortage = first ? line.Shortage : 0d });
+            }
+        }
+
+        return result;
+    }
 }
 
 /// <summary>Один загрузочник: строки одного места хранения с одним «коментом».</summary>
+/// <param name="Place">Место хранения. null - загрузочник собран по всем местам сразу.</param>
 public sealed record RestockLoader(
     string SheetName,
-    StoragePlace Place,
+    StoragePlace? Place,
     string Comment,
     IReadOnlyList<PickLine> Lines);
 
@@ -109,18 +172,39 @@ public sealed record RestockLoader(
 /// Загрузочники подтоварки. На каждое место хранения и каждый «комент» - свой лист:
 /// «Очки отдельно» на «иза» и на «измп» - два разных загрузочника. Лист называется
 /// «З‹место›-‹начало комента›»: «ЗМП-любой», «ЗА-мелкий», «ЗМПП-352».
+///
+/// У подразделения 206 загрузочники по местам не делятся - только по «коментам»:
+/// «З-микс», «З-крупное».
 /// </summary>
 public static class RestockLoaderBuilder
 {
     /// <summary>Самое длинное название листа, которое принимает Excel.</summary>
     public const int SheetNameLimit = 31;
 
+    /// <summary>Подразделение, у которого загрузочники не делятся по местам хранения.</summary>
+    public const string SinglePlaceDivision = "206";
+
+    /// <summary>«Комент» заказа, у которого каждый код грузится своим номером заказа.</summary>
+    public const string MonoMarker = "моно";
+
     public static IReadOnlyList<RestockLoader> Build(
         IReadOnlyList<PickLine> lines,
-        Func<int, string> commentOfRow)
+        Func<int, string> commentOfRow,
+        bool mergePlaces = false)
     {
         var taken = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var result = new List<RestockLoader>();
+
+        if (mergePlaces)
+        {
+            foreach (var group in lines.GroupBy(line => TextUtils.NormalizeKey(commentOfRow(line.RowIndex))))
+            {
+                var merged = TextUtils.Normalize(commentOfRow(group.First().RowIndex));
+                result.Add(new RestockLoader(SheetName(null, merged, taken), null, merged, group.ToList()));
+            }
+
+            return result;
+        }
 
         foreach (var place in StoragePlaces.Priority)
         {
@@ -139,8 +223,48 @@ public static class RestockLoaderBuilder
         return result;
     }
 
+    /// <summary>
+    /// Номер заказа по строкам загрузочника. Обычно это номер города: Мск - 1, Спб - 2.
+    /// У «моно» заказов каждый код грузится отдельно, и номер растёт по кодам.
+    /// </summary>
+    public static IReadOnlyList<double> OrderNumbers(RestockLoader loader, IReadOnlyList<string> cities)
+    {
+        if (TextUtils.ContainsKey(loader.Comment, MonoMarker))
+        {
+            var numbers = new Dictionary<string, double>(StringComparer.Ordinal);
+            return loader.Lines
+                .Select(line =>
+                {
+                    var key = TextUtils.NormalizeKey(line.Code);
+                    if (!numbers.TryGetValue(key, out var number))
+                    {
+                        number = numbers.Count + 1;
+                        numbers[key] = number;
+                    }
+
+                    return number;
+                })
+                .ToList();
+        }
+
+        return loader.Lines.Select(line => (double)Math.Max(CityNumber(cities, line.City), 1)).ToList();
+    }
+
+    private static int CityNumber(IReadOnlyList<string> cities, string city)
+    {
+        for (var index = 0; index < cities.Count; index++)
+        {
+            if (TextUtils.EqualsKey(cities[index], TextUtils.NormalizeKey(city)))
+            {
+                return index + 1;
+            }
+        }
+
+        return 1;
+    }
+
     /// <summary>«ЗМП-любой»: начало «комента» - первое слово или число, «352-148ЧЕРНЫЙ» даёт «352».</summary>
-    public static string SheetName(StoragePlace place, string comment, ISet<string> taken)
+    public static string SheetName(StoragePlace? place, string comment, ISet<string> taken)
     {
         var start = new StringBuilder();
         foreach (var ch in TextUtils.Normalize(comment))
@@ -163,7 +287,8 @@ public static class RestockLoaderBuilder
             start.Append(char.ToLowerInvariant(ch));
         }
 
-        var name = "З" + StoragePlaces.Code(place) + (start.Length > 0 ? "-" + start : string.Empty);
+        var name = "З" + (place is { } value ? StoragePlaces.Code(value) : string.Empty) +
+                   (start.Length > 0 ? "-" + start : string.Empty);
         if (name.Length > SheetNameLimit)
         {
             name = name[..SheetNameLimit];
@@ -180,13 +305,14 @@ public static class RestockLoaderBuilder
     }
 
     /// <summary>
-    /// «Комментарий» загрузочника: маркетплейс, секторы, место хранения (у поставок - их номера
-    /// без повторов), приоритет. «Lamoda Подтоварка Сумки, Обувь из С318-156, С2437-027 Приоритет к 17.09».
+    /// «Комментарий» загрузочника: маркетплейс, город, «комент» заказа и приоритет.
+    /// У поставок к этому добавляются их номера без повторов:
+    /// «Lamoda Мск Подтоварка Любое из С318-156, С2437-027 Приоритет к 17.09».
     /// </summary>
     public static string CommentText(
         string marketplace,
-        IEnumerable<string> sectors,
-        StoragePlace place,
+        string city,
+        string comment,
         IEnumerable<string> supplyNumbers,
         IEnumerable<string> priorities)
     {
@@ -196,15 +322,25 @@ public static class RestockLoaderBuilder
             parts.Add(marketplace);
         }
 
-        parts.Add("Подтоварка");
-
-        var sectorText = string.Join(", ", Distinct(sectors).Select(SentenceCase));
-        if (sectorText.Length > 0)
+        var cityText = TextUtils.Normalize(city);
+        if (cityText.Length > 0)
         {
-            parts.Add(sectorText);
+            parts.Add(cityText);
         }
 
-        parts.Add("из " + PlaceText(place, supplyNumbers));
+        parts.Add("Подтоварка");
+
+        var commentText = SentenceCase(comment);
+        if (commentText.Length > 0)
+        {
+            parts.Add(commentText);
+        }
+
+        var supplies = string.Join(", ", Distinct(supplyNumbers));
+        if (supplies.Length > 0)
+        {
+            parts.Add("из " + supplies);
+        }
 
         var priorityText = string.Join(", ", Distinct(priorities));
         if (priorityText.Length > 0)
@@ -228,14 +364,6 @@ public static class RestockLoaderBuilder
 
         return TextUtils.Normalize(TextUtils.CellToString(value));
     }
-
-    public static string PlaceText(StoragePlace place, IEnumerable<string> supplyNumbers) => place switch
-    {
-        StoragePlace.Marketplace => "адресов МП",
-        StoragePlace.Storage => "А1,А2,А3",
-        StoragePlace.Returns => "Возвратов",
-        _ => string.Join(", ", Distinct(supplyNumbers)),
-    };
 
     /// <summary>
     /// Как маркетплейс называют в комментариях заказов: «Lamoda Подтоварка…», «Ozon Мск…».
@@ -284,13 +412,12 @@ public static class RestockLoaderBuilder
     }
 }
 
-/// <summary>Какие строки «Р» остаются: этот год, текущий месяц и два предыдущих.</summary>
+/// <summary>Какие строки «Р» остаются: заказы текущего года.</summary>
 public static class ReservePeriod
 {
     /// <summary>
-    /// «Если сегодня сентябрь 2026 - из месяцев оставим только июль, август и сентябрь».
-    /// Прошлые годы удаляются всегда, поэтому в январе остаётся только январь.
+    /// Прошлые годы удаляются: такие заказы уже отгружены или отменены. Внутри года
+    /// остаётся всё - резерв из мая тоже держит товар.
     /// </summary>
-    public static bool Keep(DateTime date, DateTime today) =>
-        date.Year >= today.Year && (date.Year > today.Year || date.Month >= today.Month - 2);
+    public static bool Keep(DateTime date, DateTime today) => date.Year >= today.Year;
 }
