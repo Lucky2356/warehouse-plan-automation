@@ -31,6 +31,38 @@ public enum PlaceSource
     CollectedSupply,
 }
 
+/// <summary>Откуда взялось «Допоставить», вписанное на первом этапе.</summary>
+public enum RestockSource
+{
+    /// <summary>Нет остатков, продаж и собранных поставок - ничего не берём, «0».</summary>
+    Zero,
+
+    /// <summary>Всё, что лежит на «А2, А3».</summary>
+    Storage,
+
+    /// <summary>Всё из «Поставок собраны».</summary>
+    Collected,
+
+    /// <summary>Всё из «Поставок не собраны».</summary>
+    NotCollected,
+}
+
+/// <summary>Строка «итога» после подготовки - всё, от чего зависит «Допоставить».</summary>
+/// <param name="Restock">«Допоставить» как есть: заполненное программа не трогает.</param>
+/// <param name="Stenki">Значения колонок стенок «Основные», «Мелкое», «Доп».</param>
+public sealed record RestockState(
+    int Index,
+    object? Restock,
+    object? StorageRemainder,
+    object? Sold,
+    object? Storage,
+    object? Collected,
+    object? NotCollected,
+    object? QuantityMarketplace,
+    IReadOnlyList<object?> Stenki);
+
+public sealed record RestockChoice(int Index, RestockSource Source, double Value);
+
 /// <summary>
 /// Что второй этап делает со строкой «итога».
 /// <paramref name="RestockFromMarketplace"/> - что вписать в пустое «Допоставить».
@@ -133,6 +165,63 @@ public static class ReceivingSummary
 
         return fills;
     }
+
+    /// <summary>
+    /// «Допоставить» первого этапа, по шагам аналитика; каждый шаг берёт только те строки,
+    /// где «Допоставить» ещё пусто:
+    ///
+    /// 1. Нет остатков (ни «Остатка хранилище», ни «А2, А3»), нет продаж и нет собранных
+    ///    поставок - ничего не берём, «0». Строки с «Количеством МП» этот шаг не трогает:
+    ///    их пустое «Допоставить» на втором этапе получает «Количество МП».
+    /// 2. Дальше - только строки, где ни в одной колонке стенок нет «МП»: такой товар
+    ///    уходит на маркетплейс, а не на хранение.
+    /// 3. «А2, А3» больше нуля - «Допоставить» равно «А2, А3».
+    /// 4. «Поставки собраны» больше нуля - равно им.
+    /// 5. «Поставки не собраны» больше нуля - равно им.
+    /// </summary>
+    public static IReadOnlyList<RestockChoice> PlanRestock(IReadOnlyList<RestockState> rows)
+    {
+        var choices = new List<RestockChoice>();
+
+        foreach (var row in rows)
+        {
+            if (TextUtils.Normalize(TextUtils.CellToString(row.Restock)).Length > 0)
+            {
+                continue;
+            }
+
+            if (Number(row.StorageRemainder) <= 0 && Number(row.Storage) <= 0 && Number(row.Sold) <= 0 &&
+                Number(row.Collected) <= 0 && Number(row.QuantityMarketplace) <= 0)
+            {
+                choices.Add(new RestockChoice(row.Index, RestockSource.Zero, 0d));
+                continue;
+            }
+
+            if (row.Stenki.Any(IsMarketplaceStenki))
+            {
+                continue;
+            }
+
+            if (Number(row.Storage) is > 0 and var storage)
+            {
+                choices.Add(new RestockChoice(row.Index, RestockSource.Storage, storage));
+            }
+            else if (Number(row.Collected) is > 0 and var collected)
+            {
+                choices.Add(new RestockChoice(row.Index, RestockSource.Collected, collected));
+            }
+            else if (Number(row.NotCollected) is > 0 and var notCollected)
+            {
+                choices.Add(new RestockChoice(row.Index, RestockSource.NotCollected, notCollected));
+            }
+        }
+
+        return choices;
+    }
+
+    /// <summary>«МП» в стенках - отдельным словом: «МП», «МП 01.10», но не «компл».</summary>
+    public static bool IsMarketplaceStenki(object? value) =>
+        !CellError.IsError(value) && TextUtils.ContainsWord(TextUtils.CellToString(value), "мп");
 
     private static bool Positive(IReadOnlyDictionary<string, double> sums, string key) =>
         sums.TryGetValue(key, out var value) && value > 0;

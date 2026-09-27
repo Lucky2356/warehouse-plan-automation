@@ -182,12 +182,56 @@ public class StorageAllocatorTests
     }
 
     [Fact]
-    public void НепонятныйРезерв_НеВычитаетсяИЗапоминается()
+    public void НепонятныйРезерв_ВычитаетсяИЗапоминается()
     {
+        // Товар под резервом занят, даже если по комментарию не понять, откуда его возьмут.
         var allocation = StorageAllocator.Allocate(4, Stock(mp: 2, a: 3), Reserve(2, "Пакеты сентябрь от 07.09"));
 
-        Assert.Equal("МП2, А2", allocation.Text);
+        Assert.Equal("А3", allocation.Text);
+        Assert.Equal(1d, allocation.Missing);
         Assert.Single(allocation.UnknownReserves);
+    }
+
+    [Fact]
+    public void Скрин_ОстатокТолькоНаА_ВесьУходитВРезерв_Ноль()
+    {
+        // 868-3264: нужно 3, на «А» 2, резерв 2 под подтоварку Ozon - собрать нечего.
+        var allocation = StorageAllocator.Allocate(
+            3, Stock(a: 2), Reserve(2, "Ozon Подтоварка МСК Микс Приоритет к 28.09 Номер загрузки 56"));
+
+        Assert.Equal("0", allocation.Text);
+        Assert.Equal(3d, allocation.Missing);
+    }
+
+    [Fact]
+    public void Скрин_ЗаказМП_БеремСМпАРезервыСДругихМест()
+    {
+        // Нужно 5; МП 12, А 51, МПП 10, СЗП 81, резервов 38. Резервы уходят на «А»,
+        // подтоварка целиком с МП.
+        var allocation = StorageAllocator.Allocate(
+            5, Stock(mp: 12, mpp: 10, a: 51, szp: 81), Reserve(38, "Опт, обувь"), marketplaceFirst: true);
+
+        Assert.Equal("МП", allocation.Text);
+        Assert.True(allocation.SinglePlace);
+    }
+
+    [Fact]
+    public void ЗаказМП_БезФлага_КакРаньше()
+    {
+        var allocation = StorageAllocator.Allocate(
+            5, Stock(mp: 12, mpp: 10, a: 51, szp: 81), Reserve(38, "Опт, обувь"));
+
+        Assert.Equal("А", allocation.Text);
+    }
+
+    [Fact]
+    public void ЗаказМП_РезервовБольшеЧемНаДругихМестах_ДобираютсяСМп()
+    {
+        // На «А» 3, резерв 10: 7 ложатся на МП, остаётся 5 - как раз на подтоварку.
+        var allocation = StorageAllocator.Allocate(
+            5, Stock(mp: 12, a: 3), Reserve(10, "Опт"), marketplaceFirst: true);
+
+        Assert.Equal("МП", allocation.Text);
     }
 }
 

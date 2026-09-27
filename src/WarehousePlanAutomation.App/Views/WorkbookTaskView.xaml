@@ -37,7 +37,9 @@
             <Setter Property="FontSize" Value="11.5" />
             <Setter Property="TextTrimming" Value="CharacterEllipsis" />
             <Setter Property="TextWrapping" Value="Wrap" />
-            <Setter Property="MaxHeight" Value="32" />
+            <Setter Property="LineHeight" Value="15" />
+            <Setter Property="LineStackingStrategy" Value="BlockLineHeight" />
+            <Setter Property="MaxHeight" Value="30" />
             <Style.Triggers>
                 <DataTrigger Binding="{Binding NeedsAttention}" Value="True">
                     <Setter Property="Foreground" Value="{DynamicResource WarnInkBrush}" />
@@ -176,24 +178,37 @@
                 </TextBlock>
             </StackPanel>
 
-            <!-- Метка успеха: коротко и в цвете, чтобы не повторять фразу дважды -->
+            <!--
+                Метка успеха: коротко и в цвете, чтобы не повторять фразу дважды. Ширина
+                ограничена, а длинный текст переносится: иначе в узком окне метка забирает
+                место у заголовка, и тот ломается в три строки.
+            -->
             <Border Grid.Column="1"
                     Style="{StaticResource Pill}"
                     VerticalAlignment="Top"
+                    MaxWidth="360"
                     Margin="20,4,0,0"
                     Visibility="{Binding HasResult, Converter={StaticResource BoolToVisibility}}">
-                <StackPanel Orientation="Horizontal">
-                    <Path Data="M3.4,8.4 L6.4,11.4 L12.6,4.4"
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <Path Grid.Column="0"
+                          Data="M3.4,8.4 L6.4,11.4 L12.6,4.4"
                           Stroke="{DynamicResource SuccessBrush}"
                           StrokeThickness="2"
                           StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
                           Width="16" Height="16" Stretch="None"
-                          VerticalAlignment="Center" />
-                    <TextBlock Style="{StaticResource PillText}"
+                          VerticalAlignment="Top"
+                          Margin="0,1,0,0" />
+                    <TextBlock Grid.Column="1"
+                               Style="{StaticResource PillText}"
                                Margin="7,0,0,0"
+                               TextWrapping="Wrap"
                                VerticalAlignment="Center"
                                Text="{Binding SuccessMessage}" />
-                </StackPanel>
+                </Grid>
             </Border>
         </Grid>
 
@@ -580,7 +595,11 @@
                     <ItemsControl Grid.Row="1" Margin="16,14,10,0" ItemsSource="{Binding Counters}">
                         <ItemsControl.ItemsPanel>
                             <ItemsPanelTemplate>
-                                <WrapPanel ItemWidth="170" ItemHeight="88" />
+                                <!--
+                                    Высота считана под две строки подписи: 20 отступа, 34 цифры,
+                                    2 зазор и 32 на подпись - плюс 8 до соседней плитки.
+                                -->
+                                <WrapPanel ItemWidth="170" ItemHeight="100" />
                             </ItemsPanelTemplate>
                         </ItemsControl.ItemsPanel>
                         <ItemsControl.ItemTemplate>

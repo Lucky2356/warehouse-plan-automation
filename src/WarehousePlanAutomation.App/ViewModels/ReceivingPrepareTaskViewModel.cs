@@ -7,7 +7,8 @@ namespace WarehousePlanAutomation.App.ViewModels;
 
 /// <summary>
 /// Приемка на хранилище, первый этап: выгрузки разобраны, «Приходы» покрашены,
-/// листы поставок и «итог» собраны. После него аналитик решает «Допоставить».
+/// листы поставок и «итог» собраны, «Допоставить» заполнено по правилу аналитика.
+/// После него аналитик его проверяет и правит.
 /// </summary>
 public sealed class ReceivingPrepareTaskViewModel : WorkbookTaskViewModel
 {
@@ -61,7 +62,7 @@ public sealed class ReceivingPrepareTaskViewModel : WorkbookTaskViewModel
         "«Непринятый товар», «Согласование количества», «Склад», «Т.Остатки», «Остатки», «Резервы» " +
         "и «Приходы».";
 
-    public override string SuccessMessage => "Приемка на хранилище подготовлена - заполните «Допоставить» на «итоге»";
+    public override string SuccessMessage => "Приемка на хранилище подготовлена - проверьте «Допоставить» на «итоге»";
 
     public override string FailureMessage => "Не удалось подготовить приемку на хранилище.";
 }

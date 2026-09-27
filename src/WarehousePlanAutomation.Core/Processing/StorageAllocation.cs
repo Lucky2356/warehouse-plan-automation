@@ -211,23 +211,31 @@ public sealed record StorageAllocation(
 /// Если такого нет, количество набирается с нескольких мест по той же очереди. Резервы при этом
 /// вычитаются из того места, на котором лежат, - это видно по комментарию заказа. Резервы опта
 /// снимаются с любого места, где есть остаток, а на образцы и на фото - только с поставок,
-/// то есть с МПП и СЗП. Не вычитается только резерв, место которого по комментарию не понять.
+/// то есть с МПП и СЗП. Резерв, место которого по комментарию не понять, тоже вычитается -
+/// с любого места, как опт: товар под ним уже занят. О нём только пишется замечание.
+///
+/// У строк «Отгрузка в рамках заказа МП» подтоварка в первую очередь берётся с МП и МПП,
+/// а резервы уводятся на другие места - В, А, СЗП; на МП и МПП они ложатся, только если
+/// остальным местам их не покрыть.
 /// </summary>
 public static class StorageAllocator
 {
     public static StorageAllocation Allocate(
         double need,
         IReadOnlyDictionary<StoragePlace, double> stock,
-        IReadOnlyList<ReserveLine> reserves)
+        IReadOnlyList<ReserveLine> reserves,
+        bool marketplaceFirst = false)
     {
-        var totalReserve = reserves.Sum(reserve => reserve.Quantity);
-
-        foreach (var place in StoragePlaces.Priority)
+        if (!marketplaceFirst)
         {
-            if (Stock(stock, place) - totalReserve - need >= 0d)
+            var totalReserve = reserves.Sum(reserve => reserve.Quantity);
+            foreach (var place in StoragePlaces.Priority)
             {
-                return new StorageAllocation(
-                    new[] { new AllocationPart(place, need) }, 0d, Array.Empty<ReserveLine>());
+                if (Stock(stock, place) - totalReserve - need >= 0d)
+                {
+                    return new StorageAllocation(
+                        new[] { new AllocationPart(place, need) }, 0d, Array.Empty<ReserveLine>());
+                }
             }
         }
 
@@ -237,6 +245,25 @@ public static class StorageAllocator
         foreach (var reserve in reserves)
         {
             var target = ReserveTargets.Parse(reserve.Comment);
+            if (target.Kind == ReserveKind.Unknown)
+            {
+                unknown.Add(reserve);
+            }
+
+            // На образцы и на фото берут из поставок - это правило сильнее любого другого.
+            if (target.Kind == ReserveKind.Samples)
+            {
+                Subtract(available, SamplePlaces, reserve.Quantity);
+                continue;
+            }
+
+            if (marketplaceFirst)
+            {
+                Subtract(available, ReservePlacesForOrder, reserve.Quantity);
+                continue;
+            }
+
+            // Резерв снимается с мест по очереди: пока он не закончится или места не опустеют.
             switch (target.Kind)
             {
                 case ReserveKind.Place:
@@ -244,18 +271,8 @@ public static class StorageAllocator
                     available[place] = Math.Max(available[place] - reserve.Quantity, 0d);
                     break;
 
-                // На образцы и на фото берут из поставок, опт - откуда угодно. Резерв снимается
-                // с мест по очереди: пока он не закончится или места не опустеют.
-                case ReserveKind.Samples:
-                    Subtract(available, SamplePlaces, reserve.Quantity);
-                    break;
-
-                case ReserveKind.Anywhere:
+                default:
                     Subtract(available, StoragePlaces.Priority, reserve.Quantity);
-                    break;
-
-                case ReserveKind.Unknown:
-                    unknown.Add(reserve);
                     break;
             }
         }
@@ -285,6 +302,19 @@ public static class StorageAllocator
     {
         StoragePlace.Supplies,
         StoragePlace.NetworkSupplies,
+    };
+
+    /// <summary>
+    /// Откуда снимаются резервы у строки «Отгрузка в рамках заказа МП»: сначала места,
+    /// которые подтоварке не нужны, и только потом МП и МПП.
+    /// </summary>
+    private static readonly IReadOnlyList<StoragePlace> ReservePlacesForOrder = new[]
+    {
+        StoragePlace.Returns,
+        StoragePlace.Storage,
+        StoragePlace.NetworkSupplies,
+        StoragePlace.Marketplace,
+        StoragePlace.Supplies,
     };
 
     private static void Subtract(

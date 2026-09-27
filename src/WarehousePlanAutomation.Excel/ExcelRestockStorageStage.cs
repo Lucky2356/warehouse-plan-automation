@@ -75,7 +75,8 @@ internal sealed class ExcelRestockStorageStage
         string Note,
         object? ClientCode,
         object? Price,
-        IReadOnlyList<double> CityQuantities)
+        IReadOnlyList<double> CityQuantities,
+        bool OrderOnly)
     {
         public bool NeedsApproval =>
             TextUtils.EqualsKey(Note, TextUtils.NormalizeKey(RestockSchema.NoteApprove));
@@ -191,7 +192,8 @@ internal sealed class ExcelRestockStorageStage
             allocations[row.Index] = StorageAllocator.Allocate(
                 row.Quantity,
                 sums,
-                reserves.TryGetValue(row.AcrKey, out var lines) ? lines : Array.Empty<ReserveLine>());
+                reserves.TryGetValue(row.AcrKey, out var lines) ? lines : Array.Empty<ReserveLine>(),
+                marketplaceFirst: row.OrderOnly);
         }
 
         var loadName = ExcelSheetOperations.GetSheetName(loadSheet);
@@ -616,7 +618,8 @@ internal sealed class ExcelRestockStorageStage
                 TextUtils.Normalize(grid.Text(row, map[RestockSchema.Load.Note])),
                 grid.Value(row, map[RestockSchema.Load.ClientCode]),
                 price,
-                cityColumns.Select(column => grid.Number(row, column) ?? 0d).ToList()));
+                cityColumns.Select(column => grid.Number(row, column) ?? 0d).ToList(),
+                TextUtils.StartsWithKey(grid.Text(row, map[RestockSchema.Load.Ban]), RestockSchema.Ban.OrderOnly)));
         }
 
         return result;
@@ -750,8 +753,8 @@ internal sealed class ExcelRestockStorageStage
             warnings.Add(new ProcessingWarning(
                 "АЦР " + TextUtils.CellToString(row.PickValues[3]) + ": по комментарию резерва «" + Shorten(reserve.Comment) +
                 "» (" + AllocationText(allocation.UnknownReserves.Sum(r => r.Quantity)) +
-                " шт.) не понять, с какого он места хранения, - из остатков он не вычтен. " +
-                "Проверьте комментарий в резервах и «" + allocation.Text + "».",
+                " шт.) не понять, с какого он места хранения. Резерв вычтен с того места, где был остаток; " +
+                "проверьте комментарий в резервах и «" + allocation.Text + "».",
                 RestockSchema.LoadSheet + ", строка " + row.ExcelRow,
                 sheetName,
                 ExcelColumn.ToLetters(headers[RestockSchema.Load.Acr]) + row.ExcelRow));

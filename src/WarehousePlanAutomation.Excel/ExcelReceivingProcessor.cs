@@ -267,11 +267,22 @@ public sealed class ExcelReceivingProcessor : IWorkbookProcessor
         application.Calculation = ExcelConstants.XlCalculationAutomatic;
         application.CalculateFull();
 
+        // «Допоставить» считается по уже пересчитанному «итогу»: «А2, А3» и поставки на нём - формулы.
+        cancellationToken.ThrowIfCancellationRequested();
+        Report(progress, "«итог»: «Допоставить»", 92);
+        var restock = FillRestock(summarySheet!, warnings);
+        application.CalculateFull();
+
         return new ProcessingResult(
             path,
             new[]
             {
                 new ProcessingCounter("строк «итога»", summary.Rows),
+                new ProcessingCounter("«Допоставить» из «А2, А3»", restock.Storage),
+                new ProcessingCounter("«Допоставить» из собранных", restock.Collected),
+                new ProcessingCounter("«Допоставить» из несобранных", restock.NotCollected),
+                new ProcessingCounter("«Допоставить» = 0", restock.Zero),
+                new ProcessingCounter("пропущено: «МП» в стенках", restock.Marketplace),
                 new ProcessingCounter("адресов «А2, А3»", storage.Rows.Count),
                 new ProcessingCounter("адресов «МП»", marketplace.Rows.Count),
                 new ProcessingCounter("поставок собрано", collected.Supplies),
@@ -1471,6 +1482,97 @@ public sealed class ExcelReceivingProcessor : IWorkbookProcessor
         return new SummaryFillOutcome(fromAddresses, fromCollected, fromMarketplace);
     }
 
+    /// <summary>
+    /// «Допоставить» первого этапа по правилу аналитика (<see cref="ReceivingSummary.PlanRestock"/>):
+    /// «0», где брать нечего, дальше - всё с «А2, А3», из собранных и из несобранных поставок
+    /// там, где в стенках нет «МП». Заполненное раньше не трогается. Пишутся числа, а не формулы:
+    /// аналитик поправляет их руками.
+    /// </summary>
+    private RestockOutcome FillRestock(object sheet, List<ProcessingWarning> warnings)
+    {
+        var name = ExcelSheetOperations.GetSheetName(sheet);
+        var table = Headers(sheet, ReceivingSchema.Summary.Specs);
+        var headers = table.Headers;
+        var first = headers.HeaderRow + 1;
+        var last = LastRow(sheet, table.Bounds, headers[ReceivingSchema.Summary.Code]);
+        if (last < first)
+        {
+            return new RestockOutcome(0, 0, 0, 0, 0);
+        }
+
+        var header = ExcelSheetOperations.ReadBlock(
+            sheet, headers.HeaderRow, headers.HeaderRow, 1, table.LastHeaderColumn, withFormulas: false);
+        var stenki = Enumerable.Range(1, table.LastHeaderColumn)
+            .Where(column => IsStenkiHeader(header.Text(headers.HeaderRow, column)))
+            .ToList();
+
+        var grid = ExcelSheetOperations.ReadBlock(sheet, first, last, 1, table.LastHeaderColumn, withFormulas: false);
+        object? At(int row, string column) => grid.Value(row, headers[column]);
+
+        var states = Enumerable.Range(0, last - first + 1)
+            .Select(i => new RestockState(
+                i,
+                At(first + i, ReceivingSchema.Summary.Restock),
+                At(first + i, ReceivingSchema.Summary.StorageRemainder),
+                At(first + i, ReceivingSchema.Summary.SoldTotal),
+                At(first + i, ReceivingSchema.Summary.StorageQuantity),
+                At(first + i, ReceivingSchema.Summary.Collected),
+                At(first + i, ReceivingSchema.Summary.NotCollected),
+                At(first + i, ReceivingSchema.Summary.QuantityMarketplace),
+                stenki.Select(column => grid.Value(first + i, column)).ToList()))
+            .ToList();
+
+        var choices = ReceivingSummary.PlanRestock(states).ToList();
+
+        // Без колонок стенок не понять, какой товар уходит на маркетплейс: брать с хранения
+        // вслепую нельзя. Остаётся только «0» по инструкции.
+        if (stenki.Count == 0)
+        {
+            var skipped = choices.Count(choice => choice.Source != RestockSource.Zero);
+            choices = choices.Where(choice => choice.Source == RestockSource.Zero).ToList();
+            warnings.Add(new ProcessingWarning(
+                "На «" + name + "» нет колонок стенок «Основные», «Мелкое», «Доп» - не видно, какой товар " +
+                "уходит на МП. «Допоставить» из «А2, А3» и поставок не заполнено" +
+                (skipped > 0 ? " (строк: " + skipped + ")" : string.Empty) + ", проставлены только нули.",
+                name));
+        }
+
+        var column = headers[ReceivingSchema.Summary.Restock];
+        foreach (var choice in choices)
+        {
+            ExcelSheetOperations.SetValue(sheet, first + choice.Index, column, choice.Value);
+        }
+
+        var marketplace = stenki.Count == 0
+            ? 0
+            : states.Count(state =>
+                TextUtils.Normalize(TextUtils.CellToString(state.Restock)).Length == 0 &&
+                state.Stenki.Any(ReceivingSummary.IsMarketplaceStenki) &&
+                choices.All(choice => choice.Index != state.Index));
+
+        var outcome = new RestockOutcome(
+            choices.Count(choice => choice.Source == RestockSource.Storage),
+            choices.Count(choice => choice.Source == RestockSource.Collected),
+            choices.Count(choice => choice.Source == RestockSource.NotCollected),
+            choices.Count(choice => choice.Source == RestockSource.Zero),
+            marketplace);
+
+        _logger.Information(
+            "«" + name + "»: «Допоставить» из «А2, А3» " + outcome.Storage + ", из собранных " + outcome.Collected +
+            ", из несобранных " + outcome.NotCollected + ", нулей " + outcome.Zero + ", пропущено с «МП» в стенках " +
+            outcome.Marketplace + ". Колонки стенок: " + stenki.Count + ".");
+        return outcome;
+    }
+
+    /// <summary>«Основные фв26-27», «Мелкое фв26-27», «Доп фв26-27» - но не «Допоставить».</summary>
+    private static bool IsStenkiHeader(string? text)
+    {
+        var key = TextUtils.NormalizeKey(text);
+        return key.StartsWith("основн", StringComparison.Ordinal) ||
+               key.StartsWith("мелк", StringComparison.Ordinal) ||
+               (key.StartsWith("доп", StringComparison.Ordinal) && !key.StartsWith("допостав", StringComparison.Ordinal));
+    }
+
     /// <summary>ВПР по коду: ключ - первая колонка диапазона, значение - последняя.</summary>
     private static string Lookup(string key, string sheet, int keyColumn, int valueColumn) =>
         "=VLOOKUP(" + key + ",'" + sheet.Replace("'", "''", StringComparison.Ordinal) + "'!" +
@@ -1511,6 +1613,8 @@ public sealed class ExcelReceivingProcessor : IWorkbookProcessor
         string Sheet, int KeyColumn, int NumberColumn, int ContainerColumn, int BarcodeColumn);
 
     private sealed record SummaryFillOutcome(int FromAddresses, int FromCollected, int FromMarketplace);
+
+    private sealed record RestockOutcome(int Storage, int Collected, int NotCollected, int Zero, int Marketplace);
 
     private static object? Required(object workbook, string name, ComScope scope, List<string> problems)
     {
