@@ -62,25 +62,25 @@ public class ReceivingRestockTests
     }
 
     [Fact]
-    public void НаХраненииДесятьИМеньше_БерёмСобранное()
+    public void НаХраненииДевятьИМеньше_БерёмСобранное()
     {
-        var choice = Plan(Row(sold: 6, storage: 10, collected: 40));
+        var choice = Plan(Row(sold: 6, storage: 9, collected: 40));
 
         Assert.Equal((RestockSource.Collected, 40d), (choice!.Source, choice.Value));
     }
 
     [Fact]
-    public void СобранныхДесятьИМеньше_БерёмНесобранные()
+    public void СобранныхДевятьИМеньше_БерёмНесобранные()
     {
-        var choice = Plan(Row(sold: 6, storage: 4, collected: 9, notCollected: 11));
+        var choice = Plan(Row(sold: 6, storage: 4, collected: 9, notCollected: 10));
 
-        Assert.Equal((RestockSource.NotCollected, 11d), (choice!.Source, choice.Value));
+        Assert.Equal((RestockSource.NotCollected, 10d), (choice!.Source, choice.Value));
     }
 
     [Fact]
-    public void ВездеДесятьИМеньше_ОставляемПустым()
+    public void ВездеДевятьИМеньше_ОставляемПустым()
     {
-        Assert.Null(Plan(Row(sold: 6, storage: 10, collected: 7, notCollected: 3)));
+        Assert.Null(Plan(Row(sold: 6, storage: 9, collected: 7, notCollected: 3)));
     }
 
     [Theory]

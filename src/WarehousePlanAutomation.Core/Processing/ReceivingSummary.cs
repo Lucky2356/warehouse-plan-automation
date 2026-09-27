@@ -178,10 +178,10 @@ public static class ReceivingSummary
     /// 3. «А2, А3» больше <see cref="RestockMinimum"/> - «Допоставить» равно «А2, А3».
     /// 4. «Поставки собраны» больше него - равно им.
     /// 5. «Поставки не собраны» больше него - равно им.
-    /// Где везде десять и меньше, «Допоставить» остаётся пустым - решает аналитик.
+    /// Где везде девять и меньше, «Допоставить» остаётся пустым - решает аналитик.
     /// </summary>
     /// <summary>Больше скольких штук колонка «итога» целиком идёт в «Допоставить».</summary>
-    public const double RestockMinimum = 10;
+    public const double RestockMinimum = 9;
 
     public static IReadOnlyList<RestockChoice> PlanRestock(IReadOnlyList<RestockState> rows)
     {
