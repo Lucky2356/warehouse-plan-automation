@@ -175,10 +175,14 @@ public static class ReceivingSummary
     ///    их пустое «Допоставить» на втором этапе получает «Количество МП».
     /// 2. Дальше - только строки, где ни в одной колонке стенок нет «МП»: такой товар
     ///    уходит на маркетплейс, а не на хранение.
-    /// 3. «А2, А3» больше нуля - «Допоставить» равно «А2, А3».
-    /// 4. «Поставки собраны» больше нуля - равно им.
-    /// 5. «Поставки не собраны» больше нуля - равно им.
+    /// 3. «А2, А3» больше <see cref="RestockMinimum"/> - «Допоставить» равно «А2, А3».
+    /// 4. «Поставки собраны» больше него - равно им.
+    /// 5. «Поставки не собраны» больше него - равно им.
+    /// Где везде десять и меньше, «Допоставить» остаётся пустым - решает аналитик.
     /// </summary>
+    /// <summary>Больше скольких штук колонка «итога» целиком идёт в «Допоставить».</summary>
+    public const double RestockMinimum = 10;
+
     public static IReadOnlyList<RestockChoice> PlanRestock(IReadOnlyList<RestockState> rows)
     {
         var choices = new List<RestockChoice>();
@@ -202,15 +206,15 @@ public static class ReceivingSummary
                 continue;
             }
 
-            if (Number(row.Storage) is > 0 and var storage)
+            if (Number(row.Storage) is > RestockMinimum and var storage)
             {
                 choices.Add(new RestockChoice(row.Index, RestockSource.Storage, storage));
             }
-            else if (Number(row.Collected) is > 0 and var collected)
+            else if (Number(row.Collected) is > RestockMinimum and var collected)
             {
                 choices.Add(new RestockChoice(row.Index, RestockSource.Collected, collected));
             }
-            else if (Number(row.NotCollected) is > 0 and var notCollected)
+            else if (Number(row.NotCollected) is > RestockMinimum and var notCollected)
             {
                 choices.Add(new RestockChoice(row.Index, RestockSource.NotCollected, notCollected));
             }
