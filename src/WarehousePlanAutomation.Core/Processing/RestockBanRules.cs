@@ -45,7 +45,12 @@ public static class RestockBanRules
 {
     public static RestockDecision Decide(RestockRow row) => Decide(row, RestockExceptions.Empty);
 
-    public static RestockDecision Decide(RestockRow row, RestockExceptions exceptions)
+    /// <param name="marketplaceCovers">
+    /// Хватает ли строке одних МП и МПП (резервы - на других местах). null - остатков мест
+    /// нет, проверить нельзя.
+    /// </param>
+    public static RestockDecision Decide(
+        RestockRow row, RestockExceptions exceptions, Func<RestockRow, bool>? marketplaceCovers = null)
     {
         var ban = TextUtils.NormalizeKey(CellError.IsError(row.Ban) ? RestockSchema.Ban.NotFound : AsText(row.Ban));
 
@@ -82,7 +87,7 @@ public static class RestockBanRules
 
         if (ban.StartsWith(RestockSchema.Ban.NoRetail, StringComparison.Ordinal))
         {
-            return NoRetail(row);
+            return NoRetail(row, marketplaceCovers);
         }
 
         if (ban.StartsWith(RestockSchema.Ban.NotFound, StringComparison.Ordinal))
@@ -123,12 +128,18 @@ public static class RestockBanRules
     }
 
     /// <summary>
-    /// «Запрет забора из розницы»: не берём ничего, строка идёт на лист согласования.
-    /// Без согласования отдаётся только то, что аналитик внёс в «Исключения», - это
-    /// проверено раньше.
+    /// «Запрет забора из розницы»: из розницы не берём. Если «в подтоварку» целиком
+    /// закрывают МП и МПП - это не розница, строка «Ок», и брать её будут только оттуда.
+    /// Иначе строка идёт на лист согласования. Без согласования отдаётся ещё то, что
+    /// аналитик внёс в «Исключения», - это проверено раньше.
     /// </summary>
-    private static RestockDecision NoRetail(RestockRow row)
+    private static RestockDecision NoRetail(RestockRow row, Func<RestockRow, bool>? marketplaceCovers)
     {
+        if (row.Quantity is > 0 && marketplaceCovers?.Invoke(row) == true)
+        {
+            return Ok(row);
+        }
+
         return new RestockDecision(
             row.Index,
             RestockSchema.NoteApprove,

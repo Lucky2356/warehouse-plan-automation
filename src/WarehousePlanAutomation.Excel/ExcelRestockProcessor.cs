@@ -22,11 +22,17 @@ public sealed class ExcelRestockProcessor : IWorkbookProcessor
 {
     private readonly IAppLogger _logger;
     private readonly Func<DateTime> _nowProvider;
+    private readonly Func<bool> _byGroups;
 
-    public ExcelRestockProcessor(IAppLogger logger, Func<DateTime>? nowProvider = null)
+    /// <param name="byGroups">
+    /// Спрашивается в момент запуска: не разбивать загрузочники по местам хранения, а собрать
+    /// два - адреса (МП, А, В) и поставки (МПП, СЗП).
+    /// </param>
+    public ExcelRestockProcessor(IAppLogger logger, Func<DateTime>? nowProvider = null, Func<bool>? byGroups = null)
     {
         _logger = logger;
         _nowProvider = nowProvider ?? (() => DateTime.Now);
+        _byGroups = byGroups ?? (() => false);
     }
 
     public Task<ProcessingResult> ProcessAsync(
@@ -128,30 +134,53 @@ public sealed class ExcelRestockProcessor : IWorkbookProcessor
                     "На листе «" + RestockSchema.LoadSheet + "» нет ни одной строки с АЦР.");
             }
 
-            cancellationToken.ThrowIfCancellationRequested();
-            Report(progress, "Разбор колонки «Запрет»", 30);
-            var exceptions = ReadExceptions((object)workbook, scope);
-            var decisions = rows.Select(row => RestockBanRules.Decide(row, exceptions)).ToList();
-
-            Report(progress, "Заполнение «Заметки»", 35);
-            Apply(sheet, layout, rows, decisions);
-
-            cancellationToken.ThrowIfCancellationRequested();
-            Report(progress, "Лист «" + RestockSchema.ApprovalSheet + "»", 40);
-            var approvals = WriteApprovals((object)workbook, sheet, layout, rows, decisions, scope);
-
-            // Места хранения считаются уже по «в подтоварку», урезанному разбором «Запрета».
+            // Остатки мест собираются до разбора «Запрета»: по ним видно, хватает ли строке
+            // с запретом забора из розницы одних МП и МПП.
             var storageWarnings = new List<ProcessingWarning>();
-            var approvalSheet = ExcelSheetOperations.FindSheet((object)workbook, RestockSchema.ApprovalSheet, scope).Sheet;
-            var storage = new ExcelRestockStorageStage(_logger, _nowProvider).Run(
+            var stage = new ExcelRestockStorageStage(_logger, _nowProvider);
+            var stock = stage.Prepare(
                 applicationObject,
                 (object)workbook,
-                sheet,
-                approvalSheet ?? sheet,
                 scope,
                 (message, percent) => Report(progress, message, percent),
                 cancellationToken,
                 storageWarnings);
+
+            cancellationToken.ThrowIfCancellationRequested();
+            Report(progress, "Разбор колонки «Запрет»", 36);
+            var exceptions = ReadExceptions((object)workbook, scope);
+            Func<RestockRow, bool>? covers = stock is null
+                ? null
+                : row => stock.MarketplaceCovers(TextUtils.NormalizeKey(row.Acr), row.Quantity ?? 0d);
+            var decisions = rows.Select(row => RestockBanRules.Decide(row, exceptions, covers)).ToList();
+
+            Report(progress, "Заполнение «Заметки»", 40);
+            Apply(sheet, layout, rows, decisions);
+
+            cancellationToken.ThrowIfCancellationRequested();
+            Report(progress, "Лист «" + RestockSchema.ApprovalSheet + "»", 45);
+            var approvals = WriteApprovals((object)workbook, sheet, layout, rows, decisions, scope);
+
+            // Места хранения считаются уже по «в подтоварку», урезанному разбором «Запрета».
+            var approvalSheet = ExcelSheetOperations.FindSheet((object)workbook, RestockSchema.ApprovalSheet, scope).Sheet;
+            var byGroups = _byGroups();
+            if (byGroups)
+            {
+                _logger.Information("Загрузочники без разбивки по местам хранения: адреса (МП, А, В) и поставки (МПП, СЗП).");
+            }
+
+            var storage = stock is null
+                ? null
+                : stage.Run(
+                    stock,
+                    (object)workbook,
+                    sheet,
+                    approvalSheet ?? sheet,
+                    byGroups,
+                    scope,
+                    (message, percent) => Report(progress, message, percent),
+                    cancellationToken,
+                    storageWarnings);
 
             Report(progress, "Пересчёт формул", 90);
             application.Calculation = ExcelConstants.XlCalculationAutomatic;

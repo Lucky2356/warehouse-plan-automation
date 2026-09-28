@@ -358,6 +358,8 @@ public static class ReceivingSchema
         /// <summary>Над первой из этих колонок стоит номер текущей недели.</summary>
         public const string SeasonSharePlan = "доля сезона план";
 
+        public const string Forecast = "прогноз продаж";
+        public const string FreeRemainder = "Остаток за вычетом резервов и продаж";
         public const string Restock = "Допоставить";
         public const string Quantity = "Количество";
         public const string QuantityMarketplace = "Количество МП";
@@ -393,6 +395,9 @@ public static class ReceivingSchema
                 exactOnly: true),
             new ColumnSpec(SoldTotal, new[] { "продано итого" }, exactOnly: true),
             new ColumnSpec(SeasonSharePlan, new[] { "доля сезона план" }, exactOnly: true),
+            new ColumnSpec(Forecast, new[] { "прогноз продаж" }, exactOnly: true, optional: true),
+            new ColumnSpec(
+                FreeRemainder, new[] { "остаток за вычетом резервов и продаж" }, exactOnly: true, optional: true),
             new ColumnSpec(Restock, new[] { "допоставить" }, exactOnly: true),
             new ColumnSpec(Quantity, new[] { "количество" }, exactOnly: true),
             new ColumnSpec(QuantityMarketplace, new[] { "количество мп" }, exactOnly: true),

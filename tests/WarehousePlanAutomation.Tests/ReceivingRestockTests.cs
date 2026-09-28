@@ -100,6 +100,62 @@ public class ReceivingRestockTests
         Assert.Equal(RestockSource.Collected, choice!.Source);
     }
 
+    private static RestockChoice? PlanAll(RestockState row) =>
+        ReceivingSummary.PlanRestock(new[] { row }, RestockColumns.All).SingleOrDefault();
+
+    [Fact]
+    public void НетОстаткаПродажИПрогноза_Ноль()
+    {
+        // Скрин: «А2, А3» 461, а остатка на хранилище, продаж и прогноза нет - не везём.
+        var choice = PlanAll(Row(storage: 461) with { Forecast = 0d });
+
+        Assert.Equal((RestockSource.Zero, 0d), (choice!.Source, choice.Value));
+    }
+
+    [Fact]
+    public void ЕстьПрогноз_Берём()
+    {
+        var choice = PlanAll(Row(storage: 461) with { Forecast = 12d });
+
+        Assert.Equal(RestockSource.Storage, choice!.Source);
+    }
+
+    [Fact]
+    public void НетКолонкиПрогноза_ПравилоНеПрименяется()
+    {
+        var choice = Plan(Row(storage: 461));
+
+        Assert.Equal(RestockSource.Storage, choice!.Source);
+    }
+
+    [Theory]
+    [InlineData(11d, true)]
+    [InlineData(10d, false)]
+    public void НаХранилищеБольше10_Ноль(double free, bool zero)
+    {
+        var choice = PlanAll(Row(remainder: 30, sold: 6, collected: 40) with { Forecast = 5d, FreeRemainder = free });
+
+        Assert.Equal(zero ? RestockSource.Zero : RestockSource.Collected, choice!.Source);
+    }
+
+    [Fact]
+    public void НовыеНули_НеСтавятсяТам_ГдеЕстьКоличествоМП()
+    {
+        Assert.Null(PlanAll(
+            Row(storage: 139, marketplace: 10, stenki: new object?[] { "МП", null, null }) with { Forecast = 0d, FreeRemainder = 50d }));
+    }
+
+    [Theory]
+    [InlineData("УГГИ НАТУРАЛЬНЫЕ", 20d)]
+    [InlineData("ТАПОЧКИ ДОМАШНИЕ", 40d)]
+    [InlineData("КЕДЫ", 184d)]
+    public void ПределГруппы(string group, double expected)
+    {
+        var choice = Plan(Row(sold: 6, collected: 184) with { Group = group });
+
+        Assert.Equal(expected, choice!.Value);
+    }
+
     [Theory]
     [InlineData(40d)]
     [InlineData(0d)]

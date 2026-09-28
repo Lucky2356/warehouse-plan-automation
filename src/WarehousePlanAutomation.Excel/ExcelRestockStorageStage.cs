@@ -43,8 +43,9 @@ internal sealed class ExcelRestockStorageStage
     /// <summary>Количество разнесено по кодам - строки зелёные (RGB 226 239 218).</summary>
     private const int SplitCodeFill = 0xDAEFE2;
 
-    /// <summary>«ЗМП-любой», «ЗМПП», «З-микс»: место в названии есть не всегда.</summary>
-    private static readonly Regex LoaderSheetName = new(@"^З(МП|МПП|А|СЗП|В)?(-.*|\s\d+)?$", RegexOptions.CultureInvariant);
+    /// <summary>«ЗМП-любой», «ЗМПП», «З-микс», «ЗМП+А+В-микс»: место в названии есть не всегда.</summary>
+    private static readonly Regex LoaderSheetName = new(
+        @"^З(МП\+А\+В|МПП\+СЗП|МП|МПП|А|СЗП|В)?(-.*|\s\d+)?$", RegexOptions.CultureInvariant);
 
     /// <summary>Строка ждёт согласования - жёлтая заливка (RGB 255 230 153).</summary>
     private const int ApprovalFill = 0x99E6FF;
@@ -61,7 +62,7 @@ internal sealed class ExcelRestockStorageStage
         _now = now;
     }
 
-    private sealed record Table(object Sheet, string Name, HeaderMap Headers, int Acr, int FirstRow, int LastRow, int LastColumn);
+    internal sealed record Table(object Sheet, string Name, HeaderMap Headers, int Acr, int FirstRow, int LastRow, int LastColumn);
 
     private sealed record LoadRow(
         int Index,
@@ -76,14 +77,15 @@ internal sealed class ExcelRestockStorageStage
         object? ClientCode,
         object? Price,
         IReadOnlyList<double> CityQuantities,
-        bool OrderOnly)
+        bool OrderOnly,
+        bool NoRetail)
     {
         public bool NeedsApproval =>
             TextUtils.EqualsKey(Note, TextUtils.NormalizeKey(RestockSchema.NoteApprove));
     }
 
     /// <summary>Остатки места: по АЦР - коды в порядке листа.</summary>
-    private sealed class PlaceStock
+    internal sealed class PlaceStock
     {
         public PlaceStock(string sheet, int acrColumn, int quantityColumn, int codeColumn)
         {
@@ -133,11 +135,48 @@ internal sealed class ExcelRestockStorageStage
             Codes.TryGetValue(acrKey, out var list) ? list : Array.Empty<StockCode>();
     }
 
-    public RestockStorageOutcome? Run(
+    /// <summary>Остатки мест хранения и резервы - то, из чего считаются места строк.</summary>
+    internal sealed class StockContext
+    {
+        public StockContext(
+            Dictionary<StoragePlace, PlaceStock> stock,
+            Dictionary<string, IReadOnlyList<ReserveLine>> reserves,
+            Dictionary<string, string> divisionGroups,
+            Table reservesTable)
+        {
+            Stock = stock;
+            Reserves = reserves;
+            DivisionGroups = divisionGroups;
+            ReservesTable = reservesTable;
+        }
+
+        public Dictionary<StoragePlace, PlaceStock> Stock { get; }
+
+        public Dictionary<string, IReadOnlyList<ReserveLine>> Reserves { get; }
+
+        public Dictionary<string, string> DivisionGroups { get; }
+
+        public Table ReservesTable { get; }
+
+        public IReadOnlyDictionary<StoragePlace, double> Sums(string acrKey) =>
+            StoragePlaces.Priority.ToDictionary(place => place, place => Stock[place].Sum(acrKey));
+
+        public IReadOnlyList<ReserveLine> ReservesOf(string acrKey) =>
+            Reserves.TryGetValue(acrKey, out var lines) ? lines : Array.Empty<ReserveLine>();
+
+        /// <summary>Хватает ли АЦР одних МП и МПП, если резервы увести на другие места.</summary>
+        public bool MarketplaceCovers(string acrKey, double need) =>
+            acrKey.Length > 0 && StorageAllocator.MarketplaceCovers(need, Sums(acrKey), ReservesOf(acrKey));
+    }
+
+    /// <summary>
+    /// Листы мест хранения и резервы: «МП», «А», «В», «СЗП», остатки и резервы по АЦР.
+    /// Идёт до разбора «Запрета»: строке с запретом забора из розницы согласование не нужно,
+    /// если её закрывают МП и МПП. null - листов не хватает, места не считаются.
+    /// </summary>
+    public StockContext? Prepare(
         object applicationObject,
         object workbookObject,
-        object loadSheet,
-        object anchorSheet,
         ComScope scope,
         Action<string, int> report,
         CancellationToken cancellationToken,
@@ -163,17 +202,38 @@ internal sealed class ExcelRestockStorageStage
         RemoveGeneratedSheets(workbookObject, scope);
 
         cancellationToken.ThrowIfCancellationRequested();
-        report("Лист «" + RestockSchema.AddressSheet + "»: МП, А, В", 42);
+        report("Лист «" + RestockSchema.AddressSheet + "»: МП, А, В", 27);
         var stock = new Dictionary<StoragePlace, PlaceStock>();
         BuildAddressPlaces(applicationObject, workbookObject, addressSheet!, scope, decimalSeparator, stock, warnings);
 
         cancellationToken.ThrowIfCancellationRequested();
-        report("Лист «" + RestockSchema.ReservesSheet + "»: резервы", 55);
+        report("Лист «" + RestockSchema.ReservesSheet + "»: резервы", 30);
         var reserves = ReadReserves(reservesSheet!, listSeparator, decimalSeparator, out var divisionGroups, out var reservesTable);
 
         cancellationToken.ThrowIfCancellationRequested();
-        report("Лист «" + RestockSchema.SuppliesSheet + "»: МПП и СЗП", 60);
+        report("Лист «" + RestockSchema.SuppliesSheet + "»: МПП и СЗП", 33);
         BuildSupplyPlaces(workbookObject, suppliesSheet!, scope, listSeparator, decimalSeparator, stock, warnings);
+
+        return new StockContext(stock, reserves, divisionGroups, reservesTable);
+    }
+
+    /// <param name="byGroups">
+    /// Не разбивать по местам хранения: загрузочник адресов (МП, А, В) и загрузочник поставок
+    /// (МПП, СЗП) - см. <see cref="StorageAllocator.AllocateByGroups"/>.
+    /// </param>
+    public RestockStorageOutcome Run(
+        StockContext context,
+        object workbookObject,
+        object loadSheet,
+        object anchorSheet,
+        bool byGroups,
+        ComScope scope,
+        Action<string, int> report,
+        CancellationToken cancellationToken,
+        List<ProcessingWarning> warnings)
+    {
+        var stock = context.Stock;
+        var divisionGroups = context.DivisionGroups;
 
         cancellationToken.ThrowIfCancellationRequested();
         report("Места хранения на «" + RestockSchema.LoadSheet + "»", 66);
@@ -186,18 +246,34 @@ internal sealed class ExcelRestockStorageStage
         }
 
         var allocations = new Dictionary<int, StorageAllocation>();
+        var fromMarketplace = 0;
         foreach (var row in load.Where(row => row.AcrKey.Length > 0 && row.Quantity > 0d))
         {
-            var sums = StoragePlaces.Priority.ToDictionary(place => place, place => stock[place].Sum(row.AcrKey));
-            allocations[row.Index] = StorageAllocator.Allocate(
-                row.Quantity,
-                sums,
-                reserves.TryGetValue(row.AcrKey, out var lines) ? lines : Array.Empty<ReserveLine>(),
-                marketplaceFirst: row.OrderOnly);
+            var sums = context.Sums(row.AcrKey);
+            var reserves = context.ReservesOf(row.AcrKey);
+
+            // Запрет забора из розницы снят, потому что хватает МП и МПП, - только с них и берём.
+            if (row.NoRetail && !row.NeedsApproval && context.MarketplaceCovers(row.AcrKey, row.Quantity))
+            {
+                allocations[row.Index] = StorageAllocator.Allocate(
+                    row.Quantity, sums, reserves, marketplaceFirst: true, only: StorageAllocator.MarketplacePlaces);
+                fromMarketplace++;
+                continue;
+            }
+
+            allocations[row.Index] = byGroups
+                ? StorageAllocator.AllocateByGroups(row.Quantity, sums, reserves, marketplaceFirst: row.OrderOnly)
+                : StorageAllocator.Allocate(row.Quantity, sums, reserves, marketplaceFirst: row.OrderOnly);
+        }
+
+        if (fromMarketplace > 0)
+        {
+            _logger.Information(
+                "Строк с запретом забора из розницы, которые закрывают МП и МПП: " + fromMarketplace + ".");
         }
 
         var loadName = ExcelSheetOperations.GetSheetName(loadSheet);
-        WritePlaces(loadSheet, loadHeaders, loadFirst, loadLast, load, allocations, stock, reservesTable);
+        WritePlaces(loadSheet, loadHeaders, loadFirst, loadLast, load, allocations, stock, context.ReservesTable);
         AddUnknownReserveWarnings(load, allocations, loadHeaders, loadName, warnings);
 
         cancellationToken.ThrowIfCancellationRequested();
@@ -258,7 +334,7 @@ internal sealed class ExcelRestockStorageStage
         // собирается на каждый «комент» целиком.
         var mergePlaces = load.Any(row => TextUtils.EqualsKey(
             TextUtils.CellToString(row.ClientCode), RestockLoaderBuilder.SinglePlaceDivision));
-        var loaders = RestockLoaderBuilder.Build(pickLines, index => byIndex[index].Comment, mergePlaces);
+        var loaders = RestockLoaderBuilder.Build(pickLines, index => byIndex[index].Comment, mergePlaces, byGroups);
 
         // Загрузочники стоят сразу за «Не собрано» и «Отдельно»: их копируют
         // в «Распределительный логист», а листы «из‹место›» - рабочие, они дальше.
@@ -619,7 +695,8 @@ internal sealed class ExcelRestockStorageStage
                 grid.Value(row, map[RestockSchema.Load.ClientCode]),
                 price,
                 cityColumns.Select(column => grid.Number(row, column) ?? 0d).ToList(),
-                TextUtils.StartsWithKey(grid.Text(row, map[RestockSchema.Load.Ban]), RestockSchema.Ban.OrderOnly)));
+                TextUtils.StartsWithKey(grid.Text(row, map[RestockSchema.Load.Ban]), RestockSchema.Ban.OrderOnly),
+                TextUtils.StartsWithKey(grid.Text(row, map[RestockSchema.Load.Ban]), RestockSchema.Ban.NoRetail)));
         }
 
         return result;

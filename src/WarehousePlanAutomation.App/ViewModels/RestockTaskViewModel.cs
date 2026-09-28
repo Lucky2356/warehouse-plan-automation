@@ -44,6 +44,21 @@ public sealed class RestockTaskViewModel : WorkbookTaskViewModel
         "M3.2,7.4 L10,10.7 L16.8,7.4 " +
         "M10,10.7 L10,16.9";
 
+    private const string ByPlaceOption = "По местам хранения";
+    private const string ByGroupOption = "Не разбивать по местам хранения";
+
+    public override IReadOnlyList<string> RunOptions { get; } = new[] { ByPlaceOption, ByGroupOption };
+
+    public override string RunOptionsTitle => "ЗАГРУЗОЧНИКИ";
+
+    public override string RunOptionHint => ByGroups
+        ? "Два загрузочника на «комент»: адреса (МП, А, В) - если их хватает на всё «в подтоварку» " +
+          "с учётом резервов, иначе поставки (МПП, СЗП). Запреты и исключения - как обычно."
+        : "Свой загрузочник на каждое место хранения: МП, МПП, В, А, СЗП.";
+
+    /// <summary>Загрузочники не делятся по местам: адреса и поставки.</summary>
+    public bool ByGroups => SelectedRunOption == ByGroupOption;
+
     public override string ActionCaption => "Разобрать подтоварку";
 
     public override string InitialHint =>

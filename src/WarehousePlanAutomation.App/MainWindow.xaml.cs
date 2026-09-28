@@ -41,13 +41,17 @@ public partial class MainWindow : Window
             logger,
             settings);
 
+        RestockTaskViewModel? restock = null;
+        restock = new RestockTaskViewModel(
+            new ExcelRestockProcessor(logger, byGroups: () => restock?.ByGroups ?? false), logger, settings);
+
         var tasks = new WorkbookTaskViewModel[]
         {
             new PlanTaskViewModel(new ExcelWorkbookProcessor(logger), logger, settings),
             new PriceTaskViewModel(
                 new ExcelPriceSheetProcessor(logger, prompt, PriceStage.Prepare), logger, settings),
             distribution,
-            new RestockTaskViewModel(new ExcelRestockProcessor(logger), logger, settings),
+            restock,
             new ReceivingPrepareTaskViewModel(
                 new ExcelReceivingProcessor(logger, ReceivingStage.Prepare), logger, settings),
             new ReceivingAddressesTaskViewModel(

@@ -1508,6 +1508,27 @@ public sealed class ExcelReceivingProcessor : IWorkbookProcessor
 
         var grid = ExcelSheetOperations.ReadBlock(sheet, first, last, 1, table.LastHeaderColumn, withFormulas: false);
         object? At(int row, string column) => grid.Value(row, headers[column]);
+        object? Optional(int row, string column) =>
+            headers.TryGet(column, out var index) ? grid.Value(row, index) : null;
+
+        var columns = new RestockColumns(
+            headers.TryGet(ReceivingSchema.Summary.Forecast, out _),
+            headers.TryGet(ReceivingSchema.Summary.FreeRemainder, out _));
+        var missing = new[]
+            {
+                (columns.Forecast, ReceivingSchema.Summary.Forecast),
+                (columns.FreeRemainder, ReceivingSchema.Summary.FreeRemainder),
+            }
+            .Where(item => !item.Item1)
+            .Select(item => "«" + item.Item2 + "»")
+            .ToList();
+        if (missing.Count > 0)
+        {
+            warnings.Add(new ProcessingWarning(
+                "На «" + name + "» нет " + string.Join(" и ", missing) + ": «0» по " +
+                (missing.Count > 1 ? "этим колонкам" : "этой колонке") + " в «Допоставить» не ставится.",
+                name));
+        }
 
         var states = Enumerable.Range(0, last - first + 1)
             .Select(i => new RestockState(
@@ -1519,10 +1540,16 @@ public sealed class ExcelReceivingProcessor : IWorkbookProcessor
                 At(first + i, ReceivingSchema.Summary.Collected),
                 At(first + i, ReceivingSchema.Summary.NotCollected),
                 At(first + i, ReceivingSchema.Summary.QuantityMarketplace),
-                stenki.Select(column => grid.Value(first + i, column)).ToList()))
+                stenki.Select(column => grid.Value(first + i, column)).ToList(),
+                TextUtils.Normalize(grid.Text(first + i, headers[ReceivingSchema.Summary.Group])),
+                Optional(first + i, ReceivingSchema.Summary.Forecast),
+                Optional(first + i, ReceivingSchema.Summary.FreeRemainder)))
             .ToList();
 
-        var choices = ReceivingSummary.PlanRestock(states).ToList();
+        var choices = ReceivingSummary.PlanRestock(states, columns).ToList();
+        var capped = choices.Count(choice =>
+            choice.Source != RestockSource.Zero &&
+            ReceivingSummary.RestockCap(states[choice.Index].Group) is { } cap && choice.Value >= cap);
 
         // Без колонок стенок не понять, какой товар уходит на маркетплейс: брать с хранения
         // вслепую нельзя. Остаётся только «0» по инструкции.
@@ -1560,7 +1587,8 @@ public sealed class ExcelReceivingProcessor : IWorkbookProcessor
         _logger.Information(
             "«" + name + "»: «Допоставить» из «А2, А3» " + outcome.Storage + ", из собранных " + outcome.Collected +
             ", из несобранных " + outcome.NotCollected + ", нулей " + outcome.Zero + ", пропущено с «МП» в стенках " +
-            outcome.Marketplace + ". Колонки стенок: " + stenki.Count + ".");
+            outcome.Marketplace + ", упёрлось в предел группы (угги 20, тапочки 40) " + capped +
+            ". Колонки стенок: " + stenki.Count + ".");
         return outcome;
     }
 

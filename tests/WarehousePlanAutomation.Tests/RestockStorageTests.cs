@@ -111,12 +111,43 @@ public class StorageAllocatorTests
     }
 
     [Fact]
-    public void ОдноМесто_ВсеРезервыАцрВычитаются()
+    public void ОдноМесто_РезервСДругогоМеста_НеМешает()
     {
-        // 5 на МП минус 10 резерва не хватит, а на «А» 72 - 10 - 5 = 57.
+        // Резерв интернет-магазина лежит на «А» (72 - 10), а на МП 5 - ровно на подтоварку.
         var allocation = StorageAllocator.Allocate(5, Stock(mp: 5, a: 72), Reserve(10, "Заказ интерент магазина № Т143437"));
 
+        Assert.Equal("МП", allocation.Text);
+    }
+
+    [Fact]
+    public void ОдноМесто_РезервНаСамомМесте_Вычитается()
+    {
+        // Резерв «из адресов МП» лежит на МП: 12 - 10 = 2, на 5 не хватит - берём с «А».
+        var allocation = StorageAllocator.Allocate(
+            5, Stock(mp: 12, a: 72), Reserve(10, "Золотое Яблоко Кеды из адресов МП, А1,А2,А3 приоритет к 04.09"));
+
         Assert.Equal("А", allocation.Text);
+    }
+
+    [Fact]
+    public void Скрин_РезервыНаСзп_БерёмСМп()
+    {
+        // Нужно 30; МП 51, А 92, СЗП 522, резервов 94 с непонятным комментарием. Резервы
+        // покрывают «А» и СЗП, на МП хватает на всю подтоварку.
+        var allocation = StorageAllocator.Allocate(
+            30, Stock(mp: 51, a: 92, szp: 522), Reserve(94, "Ozon Подтоварка МСК Микс Приоритет к 28.09"));
+
+        Assert.Equal("МП", allocation.Text);
+        Assert.True(allocation.SinglePlace);
+    }
+
+    [Fact]
+    public void ОдноМесто_РезервыНекудаУвести_ОстаютсяНаМесте()
+    {
+        // МП 12, «А» 3, опт 10: на «А» уходит 3, остальные 7 ложатся на МП, остаётся 5 < 6.
+        var allocation = StorageAllocator.Allocate(6, Stock(mp: 12, a: 3), Reserve(10, "Опт"));
+
+        Assert.False(allocation.Complete);
     }
 
     [Fact]
@@ -216,12 +247,72 @@ public class StorageAllocatorTests
     }
 
     [Fact]
-    public void ЗаказМП_БезФлага_КакРаньше()
+    public void БезФлагаЗаказаМП_РезервыОптаТожеУводятся()
     {
         var allocation = StorageAllocator.Allocate(
             5, Stock(mp: 12, mpp: 10, a: 51, szp: 81), Reserve(38, "Опт, обувь"));
 
-        Assert.Equal("А", allocation.Text);
+        Assert.Equal("МП", allocation.Text);
+    }
+
+    [Fact]
+    public void ЗапретРозницы_ХватаетМпИМпп()
+    {
+        // Скрин: нужно 3, МП 80, «А» 1013, резервов 27 - хватает одного МП.
+        Assert.True(StorageAllocator.MarketplaceCovers(3, Stock(mp: 80, a: 1013), Reserve(27, "Опт")));
+
+        // МП 2 + МПП 2 на 3 хватает, если резерв уходит на «А».
+        Assert.True(StorageAllocator.MarketplaceCovers(3, Stock(mp: 2, mpp: 2, a: 5), Reserve(5, "Опт")));
+    }
+
+    [Fact]
+    public void ЗапретРозницы_НаМпИМппНеХватает()
+    {
+        Assert.False(StorageAllocator.MarketplaceCovers(30, Stock(mp: 10, mpp: 5, a: 1000), Array.Empty<ReserveLine>()));
+
+        // Резерв лежит на МП, и увести его некуда.
+        Assert.False(StorageAllocator.MarketplaceCovers(5, Stock(mp: 12), Reserve(10, "Опт")));
+    }
+
+    [Fact]
+    public void ТолькоМпИМпп_НабираетсяСНих()
+    {
+        var allocation = StorageAllocator.Allocate(
+            3, Stock(mp: 2, mpp: 2, v: 50), Reserve(5, "Опт"),
+            marketplaceFirst: true, only: StorageAllocator.MarketplacePlaces);
+
+        Assert.Equal("МП2, МПП1", allocation.Text);
+        Assert.True(allocation.Complete);
+    }
+
+    [Fact]
+    public void БезРазбивки_АдресаХватает()
+    {
+        // МП + А + В - Р = 3 + 4 + 5 - 2 = 10 >= 8: адреса, хотя на МПП хватило бы одного места.
+        var allocation = StorageAllocator.AllocateByGroups(
+            8, Stock(mp: 3, a: 4, v: 5, mpp: 100), Reserve(2, "Опт"));
+
+        Assert.All(allocation.Parts, part => Assert.Equal(0, StoragePlaces.GroupOf(part.Place)));
+        Assert.True(allocation.Complete);
+    }
+
+    [Fact]
+    public void БезРазбивки_АдресовМало_Поставки()
+    {
+        // Адреса: 3 + 4 - 2 = 5 < 8; поставки: 6 + 10 - 2 = 14.
+        var allocation = StorageAllocator.AllocateByGroups(
+            8, Stock(mp: 3, a: 4, mpp: 6, szp: 10), Reserve(2, "Опт"));
+
+        Assert.All(allocation.Parts, part => Assert.Equal(1, StoragePlaces.GroupOf(part.Place)));
+        Assert.True(allocation.Complete);
+    }
+
+    [Fact]
+    public void БезРазбивки_НигдеНеХватает_НабираетсяКакОбычно()
+    {
+        var allocation = StorageAllocator.AllocateByGroups(10, Stock(mp: 6, mpp: 6), Array.Empty<ReserveLine>());
+
+        Assert.Equal("МП6, МПП4", allocation.Text);
     }
 
     [Fact]
@@ -332,6 +423,25 @@ public class RestockLoaderBuilderTests
         var loaders = RestockLoaderBuilder.Build(lines, index => comments[index]);
 
         Assert.Equal(new[] { "ЗМП-очки", "ЗА-любой", "ЗА-очки" }, loaders.Select(l => l.SheetName));
+        Assert.Equal(2, loaders[1].Lines.Count);
+    }
+
+    [Fact]
+    public void БезРазбивки_АдресаИПоставки()
+    {
+        var lines = new[]
+        {
+            new PickLine(0, StoragePlace.Marketplace, "1", 1, 1, "", PickMark.None),
+            new PickLine(1, StoragePlace.Storage, "2", 1, 1, "", PickMark.None),
+            new PickLine(2, StoragePlace.Returns, "3", 1, 1, "", PickMark.None),
+            new PickLine(3, StoragePlace.NetworkSupplies, "4", 1, 1, "С318-156", PickMark.None),
+            new PickLine(4, StoragePlace.Supplies, "5", 1, 1, "М318-154", PickMark.None),
+        };
+
+        var loaders = RestockLoaderBuilder.Build(lines, _ => "микс", byGroups: true);
+
+        Assert.Equal(new[] { "ЗМП+А+В-микс", "ЗМПП+СЗП-микс" }, loaders.Select(l => l.SheetName));
+        Assert.Equal(3, loaders[0].Lines.Count);
         Assert.Equal(2, loaders[1].Lines.Count);
     }
 

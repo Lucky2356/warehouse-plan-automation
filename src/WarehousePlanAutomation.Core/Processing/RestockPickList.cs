@@ -190,7 +190,8 @@ public sealed record RestockLoader(
 /// «З‹место›-‹начало комента›»: «ЗМП-любой», «ЗА-мелкий», «ЗМПП-352».
 ///
 /// У подразделения 206 загрузочники по местам не делятся - только по «коментам»:
-/// «З-микс», «З-крупное».
+/// «З-микс», «З-крупное». Без разбивки по местам их два на «комент»: «ЗМП+А+В-микс»
+/// и «ЗМПП+СЗП-микс».
 /// </summary>
 public static class RestockLoaderBuilder
 {
@@ -203,10 +204,15 @@ public static class RestockLoaderBuilder
     /// <summary>«Комент» заказа, у которого каждый код грузится своим номером заказа.</summary>
     public const string MonoMarker = "моно";
 
+    /// <param name="byGroups">
+    /// Не разбивать по местам: на каждый «комент» два загрузочника - адреса («ЗМП+А+В-…»)
+    /// и поставки («ЗМПП+СЗП-…»).
+    /// </param>
     public static IReadOnlyList<RestockLoader> Build(
         IReadOnlyList<PickLine> lines,
         Func<int, string> commentOfRow,
-        bool mergePlaces = false)
+        bool mergePlaces = false,
+        bool byGroups = false)
     {
         var taken = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var result = new List<RestockLoader>();
@@ -216,7 +222,28 @@ public static class RestockLoaderBuilder
             foreach (var group in lines.GroupBy(line => TextUtils.NormalizeKey(commentOfRow(line.RowIndex))))
             {
                 var merged = TextUtils.Normalize(commentOfRow(group.First().RowIndex));
-                result.Add(new RestockLoader(SheetName(null, merged, taken), null, merged, group.ToList()));
+                result.Add(new RestockLoader(SheetName(string.Empty, merged, taken), null, merged, group.ToList()));
+            }
+
+            return result;
+        }
+
+        if (byGroups)
+        {
+            for (var index = 0; index < StoragePlaces.Groups.Count; index++)
+            {
+                var number = index;
+                var groups = lines
+                    .Where(line => StoragePlaces.GroupOf(line.Place) == number)
+                    .GroupBy(line => TextUtils.NormalizeKey(commentOfRow(line.RowIndex)))
+                    .ToList();
+
+                foreach (var group in groups)
+                {
+                    var comment = TextUtils.Normalize(commentOfRow(group.First().RowIndex));
+                    result.Add(new RestockLoader(
+                        SheetName(StoragePlaces.GroupCode(number), comment, taken), null, comment, group.ToList()));
+                }
             }
 
             return result;
@@ -280,7 +307,11 @@ public static class RestockLoaderBuilder
     }
 
     /// <summary>«ЗМП-любой»: начало «комента» - первое слово или число, «352-148ЧЕРНЫЙ» даёт «352».</summary>
-    public static string SheetName(StoragePlace? place, string comment, ISet<string> taken)
+    public static string SheetName(StoragePlace? place, string comment, ISet<string> taken) =>
+        SheetName(place is { } value ? StoragePlaces.Code(value) : string.Empty, comment, taken);
+
+    /// <summary>То же, но место записано как есть: «МП+А+В».</summary>
+    public static string SheetName(string placeCode, string comment, ISet<string> taken)
     {
         var start = new StringBuilder();
         foreach (var ch in TextUtils.Normalize(comment))
@@ -303,8 +334,7 @@ public static class RestockLoaderBuilder
             start.Append(char.ToLowerInvariant(ch));
         }
 
-        var name = "З" + (place is { } value ? StoragePlaces.Code(value) : string.Empty) +
-                   (start.Length > 0 ? "-" + start : string.Empty);
+        var name = "З" + placeCode + (start.Length > 0 ? "-" + start : string.Empty);
         if (name.Length > SheetNameLimit)
         {
             name = name[..SheetNameLimit];

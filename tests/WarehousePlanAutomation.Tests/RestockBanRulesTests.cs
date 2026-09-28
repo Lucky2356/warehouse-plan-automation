@@ -73,6 +73,35 @@ public class RestockBanRulesTests
         Assert.True(decision.NeedsApproval);
     }
 
+    [Fact]
+    public void ЗапретРозницы_ХватаетМпИМпп_Ок()
+    {
+        var decision = RestockBanRules.Decide(Row(ban: NoRetail, quantity: 3d), RestockExceptions.Empty, _ => true);
+
+        Assert.Equal(RestockSchema.NoteOk, decision.Note);
+        Assert.False(decision.Highlight);
+        Assert.False(decision.NeedsApproval);
+    }
+
+    [Fact]
+    public void ЗапретРозницы_МпИМппНеХватает_НаСогласование()
+    {
+        var decision = RestockBanRules.Decide(Row(ban: NoRetail, quantity: 3d), RestockExceptions.Empty, _ => false);
+
+        Assert.True(decision.NeedsApproval);
+        Assert.True(decision.Highlight);
+    }
+
+    [Fact]
+    public void ЗаказМП_ПроверкаМпНеНужна()
+    {
+        // У «Отгрузки в рамках заказа МП» своё правило - по «Фактическому кол-ву».
+        var decision = RestockBanRules.Decide(
+            Row(ban: OrderOnly, quantity: 40d, available: 12d), RestockExceptions.Empty, _ => true);
+
+        Assert.Equal(12d, decision.Quantity);
+    }
+
     // ===== Лист «Исключения» =====
 
     [Theory]

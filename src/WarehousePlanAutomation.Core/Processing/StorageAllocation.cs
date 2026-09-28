@@ -72,6 +72,22 @@ public static class StoragePlaces
         _ => null,
     };
 
+    /// <summary>
+    /// Загрузочники без разбивки по местам: один на адреса (МП, А, В), другой на поставки
+    /// (МПП, СЗП). Порядок - тот, в котором строка ищет себе загрузочник.
+    /// </summary>
+    public static readonly IReadOnlyList<IReadOnlyList<StoragePlace>> Groups = new[]
+    {
+        (IReadOnlyList<StoragePlace>)new[] { StoragePlace.Marketplace, StoragePlace.Returns, StoragePlace.Storage },
+        new[] { StoragePlace.Supplies, StoragePlace.NetworkSupplies },
+    };
+
+    /// <summary>Загрузочник места при работе без разбивки: 0 - адреса, 1 - поставки.</summary>
+    public static int GroupOf(StoragePlace place) => IsSupply(place) ? 1 : 0;
+
+    /// <summary>Как группа называется в названии загрузочника: «МП+А+В», «МПП+СЗП».</summary>
+    public static string GroupCode(int group) => group == 0 ? "МП+А+В" : "МПП+СЗП";
+
     /// <summary>Номер непринятой поставки: «С…» - на «СЗП», «М…» и «Л…» - на «МПП».</summary>
     public static StoragePlace? FromSupplyNumber(string? number)
     {
@@ -165,8 +181,8 @@ public sealed record AllocationPart(StoragePlace Place, double Quantity);
 /// <param name="Parts">Места и количества по очереди приоритета. Пусто - взять неоткуда.</param>
 /// <param name="Missing">Сколько не хватило: больше нуля - строка «Не собрано».</param>
 /// <param name="UnknownReserves">
-/// Резервы, место которых по комментарию не понять. Они ни из чего не вычтены - количество
-/// могло оказаться завышенным.
+/// Резервы, место которых по комментарию не понять. Они вычтены с того места, где был
+/// остаток, - комментарий стоит проверить.
 /// </param>
 public sealed record StorageAllocation(
     IReadOnlyList<AllocationPart> Parts,
@@ -205,8 +221,11 @@ public sealed record StorageAllocation(
 /// <summary>
 /// Место хранения строки «на загрузку».
 ///
-/// Сначала ищется одно место, с которого можно взять всё: остаток места минус все резервы АЦР
-/// минус «в подтоварку» не меньше нуля. Места перебираются в порядке МП, МПП, А, СЗП, В.
+/// Сначала ищется одно место, с которого можно взять всё. Места перебираются в порядке
+/// МП, МПП, В, А, СЗП, и резервы АЦР для проверки места уводятся на другие места: если
+/// на МП хватает на подтоварку, а резервы покрывает СЗП, берём с МП. На самом месте резерв
+/// остаётся, только когда он лежит именно там (так по комментарию заказа) или другим местам
+/// его не покрыть.
 ///
 /// Если такого нет, количество набирается с нескольких мест по той же очереди. Резервы при этом
 /// вычитаются из того места, на котором лежат, - это видно по комментарию заказа. Резервы опта
@@ -214,41 +233,167 @@ public sealed record StorageAllocation(
 /// то есть с МПП и СЗП. Резерв, место которого по комментарию не понять, тоже вычитается -
 /// с любого места, как опт: товар под ним уже занят. О нём только пишется замечание.
 ///
-/// У строк «Отгрузка в рамках заказа МП» подтоварка в первую очередь берётся с МП и МПП,
-/// а резервы уводятся на другие места - В, А, СЗП; на МП и МПП они ложатся, только если
-/// остальным местам их не покрыть.
+/// У строк «Отгрузка в рамках заказа МП» место резерва по комментарию не важно: подтоварка
+/// в первую очередь берётся с МП и МПП, а резервы уводятся на другие места - В, А, СЗП;
+/// на МП и МПП они ложатся, только если остальным местам их не покрыть.
 /// </summary>
 public static class StorageAllocator
 {
+    /// <summary>Места маркетплейса: с них можно брать и при запрете забора из розницы.</summary>
+    public static readonly IReadOnlyList<StoragePlace> MarketplacePlaces = new[]
+    {
+        StoragePlace.Marketplace,
+        StoragePlace.Supplies,
+    };
+
+    /// <param name="only">
+    /// Брать только с этих мест. null - со всех. Резервы при этом по-прежнему могут лечь
+    /// на любое место.
+    /// </param>
     public static StorageAllocation Allocate(
+        double need,
+        IReadOnlyDictionary<StoragePlace, double> stock,
+        IReadOnlyList<ReserveLine> reserves,
+        bool marketplaceFirst = false,
+        IReadOnlyCollection<StoragePlace>? only = null)
+    {
+        var places = StoragePlaces.Priority.Where(place => only is null || only.Contains(place)).ToList();
+        var unknown = reserves
+            .Where(reserve => ReserveTargets.Parse(reserve.Comment).Kind == ReserveKind.Unknown)
+            .ToList();
+
+        foreach (var place in places)
+        {
+            // Всё с одного места: непонятные резервы легли на другие места, замечание о них
+            // только засорило бы список.
+            if (Residual(stock, reserves, marketplaceFirst, new[] { place })[place] >= need)
+            {
+                return new StorageAllocation(
+                    new[] { new AllocationPart(place, need) }, 0d, Array.Empty<ReserveLine>());
+            }
+        }
+
+        var available = only is null
+            ? Split(stock, reserves, marketplaceFirst)
+            : Residual(stock, reserves, marketplaceFirst, only);
+
+        var parts = new List<AllocationPart>();
+        var remaining = need;
+        foreach (var place in places)
+        {
+            if (remaining <= 0d)
+            {
+                break;
+            }
+
+            var take = Math.Min(available[place], remaining);
+            if (take > 0d)
+            {
+                parts.Add(new AllocationPart(place, take));
+                remaining -= take;
+            }
+        }
+
+        return new StorageAllocation(parts, Math.Max(remaining, 0d), unknown);
+    }
+
+    /// <summary>
+    /// Расстановка без разбивки по местам: строка целиком уходит в загрузочник адресов,
+    /// если МП + А + В за вычетом всех резервов АЦР покрывают «в подтоварку», иначе -
+    /// в загрузочник поставок, если его покрывают МПП + СЗП. Не хватает ни там, ни там -
+    /// количество набирается как обычно, и части попадут в оба загрузочника.
+    /// </summary>
+    public static StorageAllocation AllocateByGroups(
         double need,
         IReadOnlyDictionary<StoragePlace, double> stock,
         IReadOnlyList<ReserveLine> reserves,
         bool marketplaceFirst = false)
     {
-        if (!marketplaceFirst)
+        var totalReserve = reserves.Sum(reserve => reserve.Quantity);
+        foreach (var group in StoragePlaces.Groups)
         {
-            var totalReserve = reserves.Sum(reserve => reserve.Quantity);
-            foreach (var place in StoragePlaces.Priority)
+            if (group.Sum(place => Math.Max(Stock(stock, place), 0d)) - totalReserve >= need)
             {
-                if (Stock(stock, place) - totalReserve - need >= 0d)
-                {
-                    return new StorageAllocation(
-                        new[] { new AllocationPart(place, need) }, 0d, Array.Empty<ReserveLine>());
-                }
+                return Allocate(need, stock, reserves, marketplaceFirst, group);
             }
         }
 
+        return Allocate(need, stock, reserves, marketplaceFirst);
+    }
+
+    /// <summary>
+    /// Хватает ли одних МП и МПП, если резервы увести на другие места: тогда строке
+    /// с запретом забора из розницы согласование не нужно.
+    /// </summary>
+    public static bool MarketplaceCovers(
+        double need,
+        IReadOnlyDictionary<StoragePlace, double> stock,
+        IReadOnlyList<ReserveLine> reserves)
+    {
+        var available = Residual(stock, reserves, marketplaceFirst: true, MarketplacePlaces);
+        return MarketplacePlaces.Sum(place => available[place]) >= need;
+    }
+
+    /// <summary>
+    /// Остатки мест за вычетом резервов, которые по возможности уведены с мест <paramref name="keep"/>.
+    /// Сначала ложатся резервы с известным местом, потом на образцы (только МПП и СЗП),
+    /// последними - те, что могут лечь куда угодно: так местам <paramref name="keep"/>
+    /// остаётся больше всего.
+    /// </summary>
+    private static Dictionary<StoragePlace, double> Residual(
+        IReadOnlyDictionary<StoragePlace, double> stock,
+        IReadOnlyList<ReserveLine> reserves,
+        bool marketplaceFirst,
+        IReadOnlyCollection<StoragePlace> keep)
+    {
         var available = StoragePlaces.Priority.ToDictionary(place => place, place => Math.Max(Stock(stock, place), 0d));
-        var unknown = new List<ReserveLine>();
+        var anywhere = LastOf(marketplaceFirst ? ReservePlacesForOrder : StoragePlaces.Priority, keep);
+        var samples = LastOf(SamplePlaces, keep);
+
+        var targets = reserves.Select(reserve => (reserve.Quantity, Target: ReserveTargets.Parse(reserve.Comment))).ToList();
+
+        if (!marketplaceFirst)
+        {
+            foreach (var (quantity, target) in targets.Where(item => item.Target.Kind == ReserveKind.Place))
+            {
+                var place = target.Place!.Value;
+                available[place] = Math.Max(available[place] - quantity, 0d);
+            }
+        }
+
+        foreach (var (quantity, _) in targets.Where(item => item.Target.Kind == ReserveKind.Samples))
+        {
+            Subtract(available, samples, quantity);
+        }
+
+        foreach (var (quantity, target) in targets)
+        {
+            var flexible = target.Kind is ReserveKind.Anywhere or ReserveKind.Unknown ||
+                           (marketplaceFirst && target.Kind == ReserveKind.Place);
+            if (flexible)
+            {
+                Subtract(available, anywhere, quantity);
+            }
+        }
+
+        return available;
+    }
+
+    /// <summary>Те же места, но <paramref name="keep"/> - в самом конце очереди.</summary>
+    private static IReadOnlyList<StoragePlace> LastOf(IReadOnlyList<StoragePlace> places, IReadOnlyCollection<StoragePlace> keep) =>
+        places.Where(place => !keep.Contains(place)).Concat(places.Where(keep.Contains)).ToList();
+
+    /// <summary>Остатки для набора с нескольких мест: резервы - в порядке листа «Р».</summary>
+    private static Dictionary<StoragePlace, double> Split(
+        IReadOnlyDictionary<StoragePlace, double> stock,
+        IReadOnlyList<ReserveLine> reserves,
+        bool marketplaceFirst)
+    {
+        var available = StoragePlaces.Priority.ToDictionary(place => place, place => Math.Max(Stock(stock, place), 0d));
 
         foreach (var reserve in reserves)
         {
             var target = ReserveTargets.Parse(reserve.Comment);
-            if (target.Kind == ReserveKind.Unknown)
-            {
-                unknown.Add(reserve);
-            }
 
             // На образцы и на фото берут из поставок - это правило сильнее любого другого.
             if (target.Kind == ReserveKind.Samples)
@@ -277,24 +422,7 @@ public static class StorageAllocator
             }
         }
 
-        var parts = new List<AllocationPart>();
-        var remaining = need;
-        foreach (var place in StoragePlaces.Priority)
-        {
-            if (remaining <= 0d)
-            {
-                break;
-            }
-
-            var take = Math.Min(available[place], remaining);
-            if (take > 0d)
-            {
-                parts.Add(new AllocationPart(place, take));
-                remaining -= take;
-            }
-        }
-
-        return new StorageAllocation(parts, Math.Max(remaining, 0d), unknown);
+        return available;
     }
 
     /// <summary>Откуда берут резервы на образцы и на фото.</summary>

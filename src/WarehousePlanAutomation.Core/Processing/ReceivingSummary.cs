@@ -34,7 +34,10 @@ public enum PlaceSource
 /// <summary>Откуда взялось «Допоставить», вписанное на первом этапе.</summary>
 public enum RestockSource
 {
-    /// <summary>Нет остатков, продаж и собранных поставок - ничего не берём, «0».</summary>
+    /// <summary>
+    /// Ничего не берём, «0»: нет остатков и продаж, или на хранилище и так хватает
+    /// (<see cref="ReceivingSummary.PlanRestock"/>).
+    /// </summary>
     Zero,
 
     /// <summary>Всё, что лежит на «А2, А3».</summary>
@@ -50,6 +53,8 @@ public enum RestockSource
 /// <summary>Строка «итога» после подготовки - всё, от чего зависит «Допоставить».</summary>
 /// <param name="Restock">«Допоставить» как есть: заполненное программа не трогает.</param>
 /// <param name="Stenki">Значения колонок стенок «Основные», «Мелкое», «Доп».</param>
+/// <param name="Forecast">«прогноз продаж».</param>
+/// <param name="FreeRemainder">«Остаток за вычетом резервов и продаж».</param>
 public sealed record RestockState(
     int Index,
     object? Restock,
@@ -59,7 +64,21 @@ public sealed record RestockState(
     object? Collected,
     object? NotCollected,
     object? QuantityMarketplace,
-    IReadOnlyList<object?> Stenki);
+    IReadOnlyList<object?> Stenki,
+    string Group = "",
+    object? Forecast = null,
+    object? FreeRemainder = null);
+
+/// <summary>
+/// Какие необязательные колонки есть на «итоге». Правило «0», которому колонки нет,
+/// не применяется: пустая колонка - не то же самое, что ноль в ней.
+/// </summary>
+public sealed record RestockColumns(bool Forecast, bool FreeRemainder)
+{
+    public static readonly RestockColumns None = new(false, false);
+
+    public static readonly RestockColumns All = new(true, true);
+}
 
 public sealed record RestockChoice(int Index, RestockSource Source, double Value);
 
@@ -170,21 +189,25 @@ public static class ReceivingSummary
     /// «Допоставить» первого этапа, по шагам аналитика; каждый шаг берёт только те строки,
     /// где «Допоставить» ещё пусто:
     ///
-    /// 1. Нет остатков (ни «Остатка хранилище», ни «А2, А3»), нет продаж и нет собранных
-    ///    поставок - ничего не берём, «0». Строки с «Количеством МП» этот шаг не трогает:
-    ///    их пустое «Допоставить» на втором этапе получает «Количество МП».
+    /// 1. «0» - ничего не берём, если:
+    ///    - нет остатков (ни «Остатка хранилище», ни «А2, А3»), нет продаж и нет собранных поставок;
+    ///    - или нет ни «Остатка хранилище», ни продаж, ни «прогноза продаж»;
+    ///    - или «Остаток за вычетом резервов и продаж» больше <see cref="EnoughInStorage"/>:
+    ///      на хранилище и так хватает.
+    ///    Строки с «Количеством МП» этот шаг не трогает: их пустое «Допоставить» на втором
+    ///    этапе получает «Количество МП».
     /// 2. Дальше - только строки, где ни в одной колонке стенок нет «МП»: такой товар
     ///    уходит на маркетплейс, а не на хранение.
     /// 3. «А2, А3» больше <see cref="RestockMinimum"/> - «Допоставить» равно «А2, А3».
     /// 4. «Поставки собраны» больше него - равно им.
     /// 5. «Поставки не собраны» больше него - равно им.
     /// Где везде девять и меньше, «Допоставить» остаётся пустым - решает аналитик.
+    /// У «Угги» больше 20, а у «Тапочек» больше 40 не ставится (<see cref="RestockCap"/>).
     /// </summary>
-    /// <summary>Больше скольких штук колонка «итога» целиком идёт в «Допоставить».</summary>
-    public const double RestockMinimum = 9;
-
-    public static IReadOnlyList<RestockChoice> PlanRestock(IReadOnlyList<RestockState> rows)
+    public static IReadOnlyList<RestockChoice> PlanRestock(
+        IReadOnlyList<RestockState> rows, RestockColumns? columns = null)
     {
+        columns ??= RestockColumns.None;
         var choices = new List<RestockChoice>();
 
         foreach (var row in rows)
@@ -194,8 +217,7 @@ public static class ReceivingSummary
                 continue;
             }
 
-            if (Number(row.StorageRemainder) <= 0 && Number(row.Storage) <= 0 && Number(row.Sold) <= 0 &&
-                Number(row.Collected) <= 0 && Number(row.QuantityMarketplace) <= 0)
+            if (IsZero(row, columns))
             {
                 choices.Add(new RestockChoice(row.Index, RestockSource.Zero, 0d));
                 continue;
@@ -206,21 +228,67 @@ public static class ReceivingSummary
                 continue;
             }
 
+            var cap = RestockCap(row.Group) ?? double.MaxValue;
             if (Number(row.Storage) is > RestockMinimum and var storage)
             {
-                choices.Add(new RestockChoice(row.Index, RestockSource.Storage, storage));
+                choices.Add(new RestockChoice(row.Index, RestockSource.Storage, Math.Min(storage, cap)));
             }
             else if (Number(row.Collected) is > RestockMinimum and var collected)
             {
-                choices.Add(new RestockChoice(row.Index, RestockSource.Collected, collected));
+                choices.Add(new RestockChoice(row.Index, RestockSource.Collected, Math.Min(collected, cap)));
             }
             else if (Number(row.NotCollected) is > RestockMinimum and var notCollected)
             {
-                choices.Add(new RestockChoice(row.Index, RestockSource.NotCollected, notCollected));
+                choices.Add(new RestockChoice(row.Index, RestockSource.NotCollected, Math.Min(notCollected, cap)));
             }
         }
 
         return choices;
+    }
+
+    /// <summary>Больше скольких штук колонка «итога» целиком идёт в «Допоставить».</summary>
+    public const double RestockMinimum = 9;
+
+    /// <summary>Больше скольких штук «Остатка за вычетом резервов и продаж» везти не нужно.</summary>
+    public const double EnoughInStorage = 10;
+
+    /// <summary>
+    /// Больше скольких штук «Допоставить» не бывает у группы: «Угги…» - 20, «Тапочки…» - 40.
+    /// null - без ограничения. Группы на «итоге» полные - «УГГИ НАТУРАЛЬНЫЕ», «ТАПОЧКИ
+    /// ДОМАШНИЕ», - поэтому сравнивается начало.
+    /// </summary>
+    public static double? RestockCap(string? group)
+    {
+        var key = TextUtils.NormalizeKey(group);
+        if (key.StartsWith("угги", StringComparison.Ordinal))
+        {
+            return 20;
+        }
+
+        return key.StartsWith("тапочки", StringComparison.Ordinal) ? 40 : null;
+    }
+
+    private static bool IsZero(RestockState row, RestockColumns columns)
+    {
+        if (Number(row.QuantityMarketplace) > 0)
+        {
+            return false;
+        }
+
+        var remainder = Number(row.StorageRemainder);
+        var sold = Number(row.Sold);
+
+        if (remainder <= 0 && Number(row.Storage) <= 0 && sold <= 0 && Number(row.Collected) <= 0)
+        {
+            return true;
+        }
+
+        if (columns.Forecast && remainder <= 0 && sold <= 0 && Number(row.Forecast) <= 0)
+        {
+            return true;
+        }
+
+        return columns.FreeRemainder && Number(row.FreeRemainder) > EnoughInStorage;
     }
 
     /// <summary>«МП» в стенках - отдельным словом: «МП», «МП 01.10», но не «компл».</summary>
