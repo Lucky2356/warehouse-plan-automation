@@ -165,9 +165,20 @@ public abstract class WorkbookTaskViewModel : NavPageViewModel
                 return;
             }
 
+            if (value == SelectedRunOption)
+            {
+                return;
+            }
+
             SetProperty(ref _selectedRunOption, value);
             OnPropertyChanged(nameof(RunOptionHint));
             OnPropertyChanged(nameof(ActionCaption));
+
+            // От варианта зависит, какие листы нужны: книга осматривается заново.
+            if (SelectedFilePath.Length > 0)
+            {
+                _ = InspectAsync(SelectedFilePath);
+            }
         }
     }
 

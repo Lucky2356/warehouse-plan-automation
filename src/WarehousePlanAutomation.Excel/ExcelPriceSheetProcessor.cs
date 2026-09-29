@@ -176,12 +176,14 @@ public sealed class ExcelPriceSheetProcessor : IWorkbookProcessor
             workbook = scope.Track(workbooks.Open(path, 0));
             application.Calculation = ExcelConstants.XlCalculationManual;
 
-            var sheets = ResolveSheets((object)workbook, scope, _stage);
+            // Что пересчитывать, читается один раз: от этого зависит и то, какие листы нужны.
+            var recalculate = _stage == PriceStage.Prepare ? RecalculateScope.All : _scope();
+            var sheets = ResolveSheets((object)workbook, scope, _stage, recalculate);
             cancellationToken.ThrowIfCancellationRequested();
 
             var outcome = _stage == PriceStage.Prepare
                 ? Prepare(applicationObject, sheets, path, sourcePath, progress, cancellationToken)
-                : _scope() switch
+                : recalculate switch
                 {
                     RecalculateScope.Link => RecalculateLink(applicationObject, sheets, path, progress),
                     RecalculateScope.Stock => RecalculateStock(applicationObject, sheets, path, progress),
@@ -721,12 +723,17 @@ public sealed class ExcelPriceSheetProcessor : IWorkbookProcessor
 
     /// <summary>
     /// Ищет только те листы, которые нужны этому этапу: на пересчёте не должно быть
-    /// требования к инвойсу, а на подготовке - к «Остаткам Н».
+    /// требования к инвойсу, а на подготовке - к «Остаткам Н». Пересчёту только «link»
+    /// из дополнительных листов нужен один «link», пересчёту только остатков - «Остатки Н».
     /// </summary>
-    private static PriceSheets ResolveSheets(object workbook, ComScope scope, PriceStage stage)
+    private static PriceSheets ResolveSheets(
+        object workbook, ComScope scope, PriceStage stage, RecalculateScope recalculate)
     {
         var problems = new List<string>();
         var prepare = stage == PriceStage.Prepare;
+        var all = !prepare && recalculate == RecalculateScope.All;
+        var link = !prepare && recalculate is RecalculateScope.All or RecalculateScope.Link;
+        var stocks = !prepare && recalculate is RecalculateScope.All or RecalculateScope.Stock;
 
         // Инвойс может прийти двумя листами - оба правильные, поэтому берутся все.
         IReadOnlyList<object> invoices = prepare
@@ -761,18 +768,18 @@ public sealed class ExcelPriceSheetProcessor : IWorkbookProcessor
         var division = Needed(PriceSchema.DivisionPriceSheet, prepare);
         // Наценки ставит пересчёт: на подготовке подгруппы ещё только собираются,
         // и спрашивать о наценке для каждой из них рано.
-        var markup = Needed(PriceSchema.MarkupSheet, !prepare);
-        var link = Needed(PriceSchema.LinkSheet, !prepare);
-        var stockSource = Needed(PriceSchema.StockSourceSheet, !prepare);
-        var stock = Needed(PriceSchema.StockSheet, !prepare);
-        var distribution = Needed(PriceSchema.DistributionSheet, !prepare);
-        var loader = Needed(PriceSchema.LoaderSheet, !prepare);
-        var seasonality = Needed(PriceSchema.SeasonalitySheet, !prepare);
+        var markup = Needed(PriceSchema.MarkupSheet, all);
+        var linkSheet = Needed(PriceSchema.LinkSheet, link);
+        var stockSource = Needed(PriceSchema.StockSourceSheet, stocks);
+        var stock = Needed(PriceSchema.StockSheet, stocks);
+        var distribution = Needed(PriceSchema.DistributionSheet, stocks);
+        var loader = Needed(PriceSchema.LoaderSheet, stocks);
+        var seasonality = Needed(PriceSchema.SeasonalitySheet, all);
 
         // Без «Аналогов» пересчёт идёт: «Аналог гугл» тогда сверяется таким, как стоит в книге.
-        var analogues = prepare
-            ? null
-            : ExcelSheetOperations.FindSheet(workbook, PriceSchema.AnaloguesSheet, scope).Sheet;
+        var analogues = all
+            ? ExcelSheetOperations.FindSheet(workbook, PriceSchema.AnaloguesSheet, scope).Sheet
+            : null;
 
         if (problems.Count > 0)
         {
@@ -780,7 +787,7 @@ public sealed class ExcelPriceSheetProcessor : IWorkbookProcessor
         }
 
         return new PriceSheets(
-            invoices, forPrices!, prices!, summary!, division!, markup!, link!,
+            invoices, forPrices!, prices!, summary!, division!, markup!, linkSheet!,
             stockSource!, stock!, distribution!, loader!, seasonality!, analogues);
     }
 

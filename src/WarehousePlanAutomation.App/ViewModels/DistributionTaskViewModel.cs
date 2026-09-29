@@ -24,22 +24,40 @@ public sealed class DistributionTaskViewModel : WorkbookTaskViewModel
 
     protected override string SettingsKey => "distribution";
 
-    protected override IReadOnlyList<string> RequiredSheets => new[]
+    /// <summary>
+    /// Листы зависят от того, что пересчитывать: только «link» из дополнительных листов
+    /// нужен один «link», только остаткам - «Остатки Н».
+    /// </summary>
+    protected override IReadOnlyList<string> RequiredSheets => Scope switch
     {
-        PriceSchema.PricesSheet,
-        PriceSchema.MarkupSheet,
-        PriceSchema.LinkSheet,
-        PriceSchema.StockSourceSheet,
-        PriceSchema.StockSheet,
-        PriceSchema.DistributionSheet,
-        PriceSchema.LoaderSheet,
-        PriceSchema.SeasonalitySheet,
+        RecalculateScope.Link => new[] { PriceSchema.PricesSheet, PriceSchema.LinkSheet },
+        RecalculateScope.Stock => new[]
+        {
+            PriceSchema.PricesSheet,
+            PriceSchema.StockSourceSheet,
+            PriceSchema.StockSheet,
+            PriceSchema.DistributionSheet,
+            PriceSchema.LoaderSheet,
+        },
+        _ => new[]
+        {
+            PriceSchema.PricesSheet,
+            PriceSchema.MarkupSheet,
+            PriceSchema.LinkSheet,
+            PriceSchema.StockSourceSheet,
+            PriceSchema.StockSheet,
+            PriceSchema.DistributionSheet,
+            PriceSchema.LoaderSheet,
+            PriceSchema.SeasonalitySheet,
+        },
     };
 
-    protected override IReadOnlyDictionary<string, string> OptionalSheets { get; } = new Dictionary<string, string>
-    {
-        [PriceSchema.AnaloguesSheet] = "«Аналог гугл» не заполнится и сверится таким, как стоит в книге",
-    };
+    protected override IReadOnlyDictionary<string, string> OptionalSheets => Scope == RecalculateScope.All
+        ? new Dictionary<string, string>
+        {
+            [PriceSchema.AnaloguesSheet] = "«Аналог гугл» не заполнится и сверится таким, как стоит в книге",
+        }
+        : new Dictionary<string, string>();
 
     protected override string? FolderOptionKey => ApprovedPricesFolderKey;
 
