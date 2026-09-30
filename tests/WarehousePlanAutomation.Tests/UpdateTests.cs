@@ -138,92 +138,64 @@ public class GitHubReleaseReaderTests
         Assert.Null(GitHubReleaseReader.Read(json));
     }
 
+    private const string Hash = "c0535e4be2b79ffd93291305436bf889314e4a3faec05ecffcbb7df31ad9e51a";
+
     [Fact]
-    public void ПодписьExe_НаходитсяПоИмени()
+    public void КонтрольнаяСуммаExe_БерётсяИзDigest()
     {
-        var json = Json(assets: """
-            [{"name":"WarehousePlanAutomation-1.9.0-win-x64.exe.sig","browser_download_url":"https://example.invalid/app.exe.sig","size":88},
-             {"name":"WarehousePlanAutomation-1.9.0-win-x64.exe","browser_download_url":"https://example.invalid/app.exe","size":71718761}]
+        var json = Json(assets: $$"""
+            [{"name":"WarehousePlanAutomation-1.9.0-win-x64.exe","browser_download_url":"https://example.invalid/app.exe",
+              "size":71718761,"digest":"sha256:{{Hash.ToUpperInvariant()}}"}]
             """);
 
-        var release = GitHubReleaseReader.Read(json);
-
-        Assert.Equal("https://example.invalid/app.exe", release!.AssetUrl);
-        Assert.Equal("https://example.invalid/app.exe.sig", release.SignatureUrl);
-    }
-
-    [Fact]
-    public void БезФайлаПодписи_ПодписьПустая()
-    {
-        Assert.Null(GitHubReleaseReader.Read(Json())!.SignatureUrl);
-    }
-}
-
-public class UpdateSignatureTests
-{
-    private const string Name = "WarehousePlanAutomation-1.20.0-win-x64.exe";
-
-    private static readonly byte[] Content = System.Text.Encoding.UTF8.GetBytes("MZ... исполняемый файл");
-
-    private static (string PublicKey, string Signature) Sign(string name, byte[] content)
-    {
-        using var key = System.Security.Cryptography.ECDsa.Create(System.Security.Cryptography.ECCurve.NamedCurves.nistP256);
-        var digest = UpdateSignature.Digest(name, new MemoryStream(content));
-        return (Convert.ToBase64String(key.ExportSubjectPublicKeyInfo()), Convert.ToBase64String(key.SignHash(digest)));
-    }
-
-    [Fact]
-    public void ВернаяПодпись_Сходится()
-    {
-        var (publicKey, signature) = Sign(Name, Content);
-
-        Assert.True(UpdateSignature.IsValid(Name, new MemoryStream(Content), " " + signature + "\n", publicKey));
-    }
-
-    [Fact]
-    public void ИзменённыйФайл_НеСходится()
-    {
-        var (publicKey, signature) = Sign(Name, Content);
-        var changed = Content.ToArray();
-        changed[0] ^= 1;
-
-        Assert.False(UpdateSignature.IsValid(Name, new MemoryStream(changed), signature, publicKey));
-    }
-
-    [Fact]
-    public void СтарыйФайлПодДругимИменем_НеСходится()
-    {
-        // Настоящий файл старой версии с его настоящей подписью нельзя выдать за новую версию.
-        var (publicKey, signature) = Sign("WarehousePlanAutomation-1.19.0-win-x64.exe", Content);
-
-        Assert.False(UpdateSignature.IsValid(Name, new MemoryStream(Content), signature, publicKey));
-    }
-
-    [Fact]
-    public void ПодписьДругимКлючом_НеСходится()
-    {
-        var (_, signature) = Sign(Name, Content);
-        var (otherKey, _) = Sign(Name, Content);
-
-        Assert.False(UpdateSignature.IsValid(Name, new MemoryStream(Content), signature, otherKey));
+        Assert.Equal(Hash, GitHubReleaseReader.Read(json)!.Sha256);
     }
 
     [Theory]
     [InlineData(null)]
     [InlineData("")]
-    [InlineData("не base64 !!!")]
-    [InlineData("AAAA")]
-    public void МусорВместоПодписи_НеСходится(string? signature)
+    [InlineData("md5:0123456789abcdef0123456789abcdef")]
+    [InlineData("sha256:не-шестнадцатеричное")]
+    [InlineData("sha256:abc")]
+    public void БезКонтрольнойСуммы_СуммаПустая(string? digest)
     {
-        Assert.False(UpdateSignature.IsValid(Name, new MemoryStream(Content), signature));
+        Assert.Null(UpdateChecksum.ParseDigest(digest));
     }
 
     [Fact]
-    public void ВстроенныйКлюч_Читается()
+    public void БезПоляDigest_СуммаПустая()
     {
-        using var key = System.Security.Cryptography.ECDsa.Create();
-        key.ImportSubjectPublicKeyInfo(Convert.FromBase64String(UpdateSignature.PublicKey), out _);
+        Assert.Null(GitHubReleaseReader.Read(Json())!.Sha256);
+    }
+}
 
-        Assert.Equal(256, key.KeySize);
+public class UpdateChecksumTests
+{
+    private static readonly byte[] Content = System.Text.Encoding.UTF8.GetBytes("MZ... исполняемый файл");
+
+    private static string Sha(byte[] content) =>
+        Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(content)).ToLowerInvariant();
+
+    [Fact]
+    public void ВернаяСумма_Сходится()
+    {
+        Assert.True(UpdateChecksum.IsValid(new MemoryStream(Content), Sha(Content)));
+    }
+
+    [Fact]
+    public void ИзменённыйФайл_НеСходится()
+    {
+        var changed = Content.ToArray();
+        changed[0] ^= 1;
+
+        Assert.False(UpdateChecksum.IsValid(new MemoryStream(changed), Sha(Content)));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    public void БезСуммы_НеСходится(string? expected)
+    {
+        Assert.False(UpdateChecksum.IsValid(new MemoryStream(Content), expected));
     }
 }

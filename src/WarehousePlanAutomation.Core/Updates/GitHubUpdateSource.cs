@@ -138,19 +138,15 @@ public sealed class GitHubUpdateSource : IUpdateSource, IDisposable
             }
         }
 
-        // Без подписи файл не качается вовсе: проверить его будет не по чему.
-        if (string.IsNullOrEmpty(release.SignatureUrl))
+        // Без контрольной суммы файл не качается вовсе: проверить его будет не по чему.
+        if (string.IsNullOrEmpty(release.Sha256))
         {
-            _logger.Warning("У выпуска " + release.Tag + " нет файла подписи " + release.AssetName + UpdateSignature.Extension + ".");
-            throw new UpdateSignatureException(
-                "У выпуска " + release.Tag + " нет подписи. Если он вышел только что, подпись появится в течение часа.");
+            _logger.Warning("GitHub не сообщил контрольную сумму файла " + release.AssetName + ".");
+            throw new UpdateVerificationException(
+                "GitHub не сообщил контрольную сумму файла выпуска " + release.Tag + ". Скачайте его вручную.");
         }
 
         var path = Path.Combine(directory, release.AssetName);
-        var signaturePath = path + UpdateSignature.Extension;
-        var signature = await DownloadSignatureAsync(release.SignatureUrl, cancellationToken).ConfigureAwait(false);
-        await File.WriteAllTextAsync(signaturePath, signature, cancellationToken).ConfigureAwait(false);
-
         _logger.Information("Загрузка обновления в " + path);
 
         using var response = await _client
@@ -204,37 +200,17 @@ public sealed class GitHubUpdateSource : IUpdateSource, IDisposable
 
         try
         {
-            UpdateSignature.EnsureValid(path, release.AssetName, signature);
+            UpdateChecksum.EnsureValid(path, release.Sha256);
         }
-        catch (UpdateSignatureException)
+        catch (UpdateVerificationException)
         {
-            _logger.Error("Подпись обновления " + release.AssetName + " не сошлась - файл удалён и не будет установлен.");
+            _logger.Error("Контрольная сумма обновления " + release.AssetName + " не совпала - файл удалён и не будет установлен.");
             File.Delete(path);
-            File.Delete(signaturePath);
             throw;
         }
 
-        _logger.Information("Обновление скачано: " + size + " байт, подпись сошлась.");
+        _logger.Information("Обновление скачано: " + size + " байт, контрольная сумма совпала.");
         return path;
-    }
-
-    /// <summary>Подпись - несколько десятков байт; больше - это уже не подпись.</summary>
-    private async Task<string> DownloadSignatureAsync(string url, CancellationToken cancellationToken)
-    {
-        using var response = await _client.GetAsync(url, cancellationToken).ConfigureAwait(false);
-        if (!response.IsSuccessStatusCode)
-        {
-            throw new UpdateSignatureException(
-                "Подпись выпуска не скачалась (GitHub ответил " + (int)response.StatusCode + ").");
-        }
-
-        var bytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
-        if (bytes.Length > 4096)
-        {
-            throw new UpdateSignatureException("Файл подписи выпуска подозрительно большой - обновление не ставится.");
-        }
-
-        return System.Text.Encoding.ASCII.GetString(bytes);
     }
 
     public void Dispose() => _client.Dispose();

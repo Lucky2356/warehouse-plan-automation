@@ -216,12 +216,12 @@ public sealed class UpdatesViewModel : NavPageViewModel
                 "Версия " + AppVersion.Display(release.Version) +
                 " скачана. Нажмите «Установить и перезапустить».";
         }
-        catch (UpdateSignatureException ex)
+        catch (UpdateVerificationException ex)
         {
-            _logger.Error("Обновление не прошло проверку подлинности.", ex);
+            _logger.Error("Обновление не прошло проверку.", ex);
             Fail(
                 "Новая версия " + AppVersion.Display(release.Version) +
-                " не установлена: не прошла проверку подлинности. " + ex.Message);
+                " не установлена: не прошла проверку. " + ex.Message);
         }
         catch (Exception ex)
         {
@@ -255,17 +255,16 @@ public sealed class UpdatesViewModel : NavPageViewModel
             return;
         }
 
-        // Между загрузкой и установкой файл лежит во временной папке: подпись проверяется
+        // Между загрузкой и установкой файл лежит во временной папке: контрольная сумма проверяется
         // ещё раз прямо перед запуском, чтобы поставить ровно то, что проверили.
         try
         {
-            var signature = System.IO.File.ReadAllText(_downloadedPath + UpdateSignature.Extension);
-            UpdateSignature.EnsureValid(_downloadedPath, _release.AssetName, signature);
+            UpdateChecksum.EnsureValid(_downloadedPath, _release.Sha256);
         }
-        catch (Exception ex) when (ex is UpdateSignatureException or System.IO.IOException or UnauthorizedAccessException)
+        catch (Exception ex) when (ex is UpdateVerificationException or System.IO.IOException or UnauthorizedAccessException)
         {
-            _logger.Error("Перед установкой подпись обновления не сошлась.", ex);
-            Fail("Обновление не установлено: файл не прошёл проверку подлинности. Скачайте его заново.");
+            _logger.Error("Перед установкой контрольная сумма обновления не совпала.", ex);
+            Fail("Обновление не установлено: файл не прошёл проверку. Скачайте его заново.");
             IsReady = false;
             return;
         }

@@ -3,8 +3,8 @@ using System.Globalization;
 namespace WarehousePlanAutomation.Core.Updates;
 
 /// <summary>Выпуск программы на GitHub: версия, описание и готовый .exe.</summary>
-/// <param name="SignatureUrl">
-/// Файл подписи «‹имя .exe›.sig». null - у выпуска подписи нет, ставить его нельзя.
+/// <param name="Sha256">
+/// Контрольная сумма .exe, которую посчитал GitHub. null - GitHub её не сообщил, ставить нельзя.
 /// </param>
 public sealed record AppRelease(
     Version Version,
@@ -14,7 +14,7 @@ public sealed record AppRelease(
     string AssetName,
     string AssetUrl,
     long AssetSize,
-    string? SignatureUrl = null);
+    string? Sha256 = null);
 
 /// <summary>Чем закончилась проверка обновлений.</summary>
 public sealed record UpdateCheck(AppRelease? Release, string? Problem)

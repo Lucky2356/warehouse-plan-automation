@@ -66,30 +66,14 @@ public static class GitHubReleaseReader
             asset.Value.Name,
             asset.Value.Url,
             asset.Value.Size,
-            FindSignature(root, asset.Value.Name));
-    }
-
-    /// <summary>Подпись .exe - файл выпуска с тем же именем и «.sig» на конце.</summary>
-    private static string? FindSignature(JsonElement root, string assetName)
-    {
-        var wanted = assetName + UpdateSignature.Extension;
-        foreach (var asset in root.GetProperty("assets").EnumerateArray())
-        {
-            if (string.Equals(Text(asset, "name"), wanted, StringComparison.OrdinalIgnoreCase))
-            {
-                var url = Text(asset, "browser_download_url");
-                return url.Length > 0 ? url : null;
-            }
-        }
-
-        return null;
+            asset.Value.Sha256);
     }
 
     /// <summary>
     /// Из файлов выпуска берётся .exe. Их и должно быть ровно столько: рабочий процесс
     /// выкладывает единственный самодостаточный файл.
     /// </summary>
-    private static (string Name, string Url, long Size)? FindAsset(JsonElement root)
+    private static (string Name, string Url, long Size, string? Sha256)? FindAsset(JsonElement root)
     {
         if (!root.TryGetProperty("assets", out var assets) || assets.ValueKind != JsonValueKind.Array)
         {
@@ -114,7 +98,7 @@ public static class GitHubReleaseReader
                 ? bytes
                 : 0L;
 
-            return (name, url, size);
+            return (name, url, size, UpdateChecksum.ParseDigest(Text(asset, "digest")));
         }
 
         return null;
