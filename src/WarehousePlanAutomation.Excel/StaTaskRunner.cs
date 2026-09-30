@@ -15,7 +15,10 @@ internal static class StaTaskRunner
             try
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                completion.SetResult(work());
+                using (ComMessageFilter.Register())
+                {
+                    completion.SetResult(work());
+                }
             }
             catch (OperationCanceledException)
             {
