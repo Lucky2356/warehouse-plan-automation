@@ -201,9 +201,18 @@ public static class TextUtils
         }
     }
 
-    /// <summary>Приводит значение ячейки к числу. Строки разбираются и с точкой, и с запятой.</summary>
+    /// <summary>
+    /// Приводит значение ячейки к числу. Строки разбираются и с точкой, и с запятой.
+    /// Ошибка формулы числом не считается: из COM «#Н/Д» приходит кодом -2146826246,
+    /// и без этой проверки он попал бы в расчёты как обычное количество или цена.
+    /// </summary>
     public static double? CellToDouble(object? cell)
     {
+        if (CellError.IsError(cell))
+        {
+            return null;
+        }
+
         switch (cell)
         {
             case null:

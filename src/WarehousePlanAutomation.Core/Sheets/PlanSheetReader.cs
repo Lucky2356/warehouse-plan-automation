@@ -112,6 +112,13 @@ public static class PlanSheetReader
 
     private static long? ReadLoadNumber(SheetGrid grid, int row, int column)
     {
+        // Ошибка формулы не номер: иначе её код -2146826246 разобрался бы по цифрам
+        // в «номер загрузки» 2146826246.
+        if (CellError.IsError(grid.Value(row, column)))
+        {
+            return null;
+        }
+
         var number = grid.Number(row, column);
         if (number is not null && number.Value >= 0 && Math.Abs(number.Value - Math.Round(number.Value)) < 1e-9)
         {

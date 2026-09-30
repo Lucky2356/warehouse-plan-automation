@@ -38,11 +38,14 @@ jobs:
       - name: Определение версии
         id: version
         shell: pwsh
+        env:
+          RELEASE_VERSION_INPUT: ${{ github.event.inputs.release_version }}
         run: |
           if ($env:GITHUB_REF -like 'refs/tags/v*') {
             $version = $env:GITHUB_REF -replace '^refs/tags/v', ''
-          } elseif ('${{ github.event.inputs.release_version }}' -ne '') {
-            $version = '${{ github.event.inputs.release_version }}'.TrimStart('v')
+          } elseif ($env:RELEASE_VERSION_INPUT -ne '') {
+            $version = $env:RELEASE_VERSION_INPUT.TrimStart('v')
+            if ($version -notmatch '^\d+\.\d+\.\d+$') { throw "Неверная версия: $version" }
           } else {
             $version = '0.0.0-build.' + $env:GITHUB_RUN_NUMBER
           }
