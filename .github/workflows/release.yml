@@ -126,4 +126,13 @@ jobs:
             "Файл $prepared не найден, взято общее описание"
           }
 
+          # Ручной запуск с версией перевыпускает релиз: прежний релиз и тег удаляются.
+          if ($env:GITHUB_EVENT_NAME -eq 'workflow_dispatch') {
+            gh release view "v$version" *> $null
+            if ($LASTEXITCODE -eq 0) {
+              gh release delete "v$version" --cleanup-tag --yes
+              if ($LASTEXITCODE -ne 0) { throw "Не удалось удалить прежний релиз v$version" }
+            }
+          }
+
           gh release create "v$version" $exe --title "v$version" --notes-file $notesFile --target "${{ github.sha }}"
