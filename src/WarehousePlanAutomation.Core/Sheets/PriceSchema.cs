@@ -138,7 +138,10 @@ public static class PriceSchema
         public static readonly IReadOnlyList<ColumnSpec> Specs = new[]
         {
             new ColumnSpec(Barcode, new[] { "штрих-код", "штрихкод", "barcode" }, exactOnly: true),
-            new ColumnSpec(Quantity, new[] { "количество", "quantity" }, exactOnly: true),
+            new ColumnSpec(
+                Quantity,
+                new[] { "количество", "кол-во ед", "кол-во ед.", "кол-во, ед", "кол-во, ед.", "quantity" },
+                exactOnly: true),
             new ColumnSpec(Price, new[] { "цена", "price" }, exactOnly: true),
             new ColumnSpec(Amount, new[] { "сумма", "amount" }, exactOnly: true),
         };

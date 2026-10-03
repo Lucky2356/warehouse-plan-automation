@@ -8,7 +8,8 @@ namespace WarehousePlanAutomation.Core.Sheets;
 /// Разбор листа инвойса. Строка заголовков ищется по «штрих-код / количество / цена /
 /// сумма»; сразу под ней в реальных инвойсах стоит вторая строка заголовков на английском,
 /// поэтому строкой товара считается только та, где есть штрихкод и «количество» - число.
-/// Итоговая строка «итого» отсекается тем же правилом: штрихкода в ней нет.
+/// Итоговая строка отсекается тем же правилом: штрихкода в ней нет. Бывает, что подпись
+/// «ИТОГО:» стоит прямо в колонке штрихкода, - такая строка тоже не товар.
 /// </summary>
 public static class InvoiceSheetReader
 {
@@ -74,7 +75,7 @@ public static class InvoiceSheetReader
         for (var row = firstRow; row <= grid.LastRow; row++)
         {
             var barcode = NormalizeBarcode(grid.Text(row, barcodeColumn));
-            if (barcode.Length == 0)
+            if (barcode.Length == 0 || IsTotalLabel(barcode))
             {
                 continue;
             }
@@ -93,6 +94,12 @@ public static class InvoiceSheetReader
                 grid.Number(row, amountColumn) ?? 0d));
         }
     }
+
+    /// <summary>
+    /// Подпись итоговой строки вместо штрихкода: «ИТОГО:», «Итого», «Всего», «Total».
+    /// В штрихкоде цифры есть всегда, поэтому строка без единой цифры товаром не считается.
+    /// </summary>
+    private static bool IsTotalLabel(string barcode) => !barcode.Any(char.IsDigit);
 
     /// <summary>
     /// Штрихкод сравнивается как текст: длинное число, прочитанное как double,

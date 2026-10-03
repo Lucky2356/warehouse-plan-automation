@@ -54,6 +54,39 @@ public class InvoiceReaderTests
         Assert.Equal(17455.75d, invoice.TotalAmount);
     }
 
+    [Theory]
+    [InlineData("ИТОГО:")]
+    [InlineData("Итого")]
+    [InlineData("Total")]
+    public void ПодписьИтогоВКолонкеШтрихкода_НеТовар(string label)
+    {
+        var grid = SheetGrid.FromRows(1, 1, new List<object?[]>
+        {
+            new object?[] { "штрих-код", "количество", "цена", "сумма" },
+            new object?[] { 1431280202d, 10d, 1d, 10d },
+            new object?[] { label, 10d, null, 10d },
+        });
+
+        var invoice = InvoiceSheetReader.Read(grid, "Invoice");
+
+        Assert.Single(invoice.Lines);
+        Assert.Equal("1431280202", invoice.Lines[0].Barcode);
+    }
+
+    [Theory]
+    [InlineData("Кол-во ед")]
+    [InlineData("Кол-во ед.")]
+    public void КолВоЕд_ЭтоКоличество(string header)
+    {
+        var grid = SheetGrid.FromRows(1, 1, new List<object?[]>
+        {
+            new object?[] { "штрих-код", header, "цена", "сумма" },
+            new object?[] { 1431280202d, 12d, 1d, 12d },
+        });
+
+        Assert.Equal(12d, InvoiceSheetReader.Read(grid, "Invoice").Lines.Single().Quantity);
+    }
+
     [Fact]
     public void НомерПоставкиБерётсяИзШапки()
     {
